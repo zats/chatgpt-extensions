@@ -101,8 +101,8 @@ if /usr/bin/pgrep -u "$gate_uid" >/dev/null; then
 fi
 
 for input in "$gate_home/output/version-gate.json" "$gate_home/codex-home/auth.json"; do
-  sudo /usr/bin/test -f "$input"
-  sudo /usr/bin/test ! -L "$input"
+  sudo /bin/test -f "$input"
+  sudo /bin/test ! -L "$input"
 done
 result_bytes="$(sudo /usr/bin/stat -f%z "$gate_home/output/version-gate.json")"
 auth_bytes="$(sudo /usr/bin/stat -f%z "$gate_home/codex-home/auth.json")"

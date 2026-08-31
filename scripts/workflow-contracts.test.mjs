@@ -368,6 +368,8 @@ test("test authentication exists only after no-secret static tests and live runs
   assert.match(helper, /pgrep -u "\$gate_uid"/);
   assert.match(helper, /chown -R root:wheel "\$gate_home\/workspace"/);
   assert.match(helper, /unexpectedly has sudo access/);
+  assert.match(helper, /sudo \/bin\/test -f/);
+  assert.doesNotMatch(helper, /\/usr\/bin\/test/);
 });
 
 test("job deadlines leave trusted cleanup time after each untrusted process bound", async () => {
