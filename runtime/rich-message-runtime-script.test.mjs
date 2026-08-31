@@ -37,6 +37,8 @@ function completeFallbacks() {
 
 function completeDiagnostics() {
   return {
+    rendererDocumentId: "document:test-renderer",
+    eventFile: "document%3Atest-renderer.json",
     drift: false,
     fallbacks: completeFallbacks(),
     interactions: {
@@ -387,6 +389,14 @@ test("diagnostics require registration and exact-owner evidence", () => {
   assert.throws(
     () => assertRichContentDiagnostics({ ...diagnostics, drift: true }),
     /owner\.drift/,
+  );
+  assert.throws(
+    () =>
+      assertRichContentDiagnostics({
+        ...diagnostics,
+        eventFile: "../events.json",
+      }),
+    /eventFile/,
   );
 });
 

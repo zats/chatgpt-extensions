@@ -239,10 +239,14 @@ class UiSurfaceProbe implements Disposable {
       Object.freeze({ sequence: this.#events.length + 1, name }),
     );
     const contents = serializeProbeEventLog(this.#events);
-    this.#write = this.#write.then(() =>
-      this.#context.storage.writeTextFile(this.#eventFile, contents),
-    );
-    return this.#write;
+    const persist = () =>
+      this.#context.storage.writeTextFile(this.#eventFile, contents);
+    const write = this.#write.then(persist, persist);
+    this.#write = write;
+    void write.catch((error: unknown) => {
+      console.error("[ui-surface-probe] failed to save event evidence", error);
+    });
+    return write;
   }
 
   async #record(name: ProbeEventName, surface: string): Promise<void> {

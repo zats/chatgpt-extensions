@@ -20,6 +20,7 @@ import {
   PROBE_EVENT_FILE,
   PROBE_FALLBACK_DEFINITIONS,
   PROBE_TYPE,
+  RichProbeEventRecorder,
   activateRichMessageProbe,
   parseRichProbeEventLog,
   richProbeEventFile,
@@ -481,6 +482,52 @@ describe("Rich Message Probe", () => {
         ),
       /invalid event/,
     );
+  });
+
+  test("recovers the full event snapshot after one rejected write", async () => {
+    let attempts = 0;
+    let contents: string | undefined;
+    const storage: ExtensionStorageApi = {
+      async listFiles() {
+        return contents === undefined ? [] : [PROBE_EVENT_FILE];
+      },
+      async readTextFile() {
+        return contents;
+      },
+      async writeTextFile(_path, nextContents) {
+        attempts += 1;
+        if (attempts === 2) throw new Error("transient probe write failure");
+        contents = nextContents;
+      },
+      async deleteFile() {
+        contents = undefined;
+      },
+    };
+    const errors: unknown[][] = [];
+    const previousError = console.error;
+    console.error = (...arguments_: unknown[]) => {
+      errors.push(arguments_);
+    };
+    try {
+      const recorder = new RichProbeEventRecorder(storage);
+      await recorder.record("extension.activate");
+      await assert.rejects(
+        recorder.record("directive.invalidate"),
+        /transient probe write failure/,
+      );
+      await recorder.record("directive.activate");
+      await recorder.flush();
+    } finally {
+      console.error = previousError;
+    }
+
+    assert.equal(attempts, 3);
+    assert.deepEqual(
+      parseRichProbeEventLog(contents).map((event) => event.name),
+      ["extension.activate", "directive.invalidate", "directive.activate"],
+    );
+    assert.equal(errors.length, 1);
+    assert.equal(errors[0]?.[0], "[rich-message-probe] failed to save event evidence");
   });
 
   test("registers eight successful surface variants and every fallback case", async () => {

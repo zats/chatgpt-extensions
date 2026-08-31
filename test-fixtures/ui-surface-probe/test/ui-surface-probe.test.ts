@@ -246,6 +246,65 @@ describe("UI Surface Probe", () => {
     );
   });
 
+  test("recovers the full event snapshot after one rejected write", async () => {
+    const harness = createHarness();
+    let attempts = 0;
+    const storage: ExtensionStorageApi = {
+      ...harness.storage,
+      async writeTextFile(path, contents, options) {
+        attempts += 1;
+        if (attempts === 1) throw new Error("transient probe write failure");
+        await harness.storage.writeTextFile(path, contents, options);
+      },
+    };
+    const errors: unknown[][] = [];
+    const previousError = console.error;
+    console.error = (...arguments_: unknown[]) => {
+      errors.push(arguments_);
+    };
+    try {
+      await activateUiSurfaceProbe({
+        api: { contributions: harness.contributions },
+        storage,
+        lifetime: new AbortController().signal,
+        document: { id: PROBE_DOCUMENT_ID },
+      });
+      const suggestionTransform = harness.transforms.get(
+        "home.new-chat-suggestions",
+      ) as UiTransformer<"home.new-chat-suggestions">;
+      const suggestions = suggestionTransform([], suggestionContext, evaluation);
+      assert.ok(!(suggestions instanceof Promise));
+      const suggestion = suggestions[0];
+      assert.ok(suggestion?.kind === "action");
+      await assert.rejects(
+        async () => {
+          await suggestion.onActivate(suggestionContext, activation);
+        },
+        /transient probe write failure/,
+      );
+
+      const sidebarTransform = harness.transforms.get(
+        "sidebar.destinations",
+      ) as UiTransformer<"sidebar.destinations">;
+      const destinations = sidebarTransform([], sidebarContext, evaluation);
+      assert.ok(!(destinations instanceof Promise));
+      const destination = destinations.at(-1);
+      assert.ok(destination?.kind === "destination");
+      assert.ok(destination.onSelect);
+      await destination.onSelect(sidebarContext, activation);
+    } finally {
+      console.error = previousError;
+    }
+
+    assert.equal(attempts, 2);
+    assert.deepEqual(
+      parseProbeEventLog(harness.writes.at(-1)).map((event) => event.name),
+      ["suggestion.activate", "sidebar.select"],
+    );
+    assert.equal(errors.length, 1);
+    assert.equal(errors[0]?.[0], "[ui-surface-probe] failed to save event evidence");
+  });
+
   test("installs and exercises every native peer and composer slot", async () => {
     const abortController = new AbortController();
     const harness = createHarness();

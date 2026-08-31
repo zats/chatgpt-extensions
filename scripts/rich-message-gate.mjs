@@ -188,6 +188,18 @@ export function assertRichContentDiagnostics(diagnostics) {
   ].flatMap(([name, value, minimum]) =>
     Number.isFinite(value) && value >= minimum ? [] : [name],
   );
+  if (
+    typeof diagnostics?.rendererDocumentId !== "string" ||
+    diagnostics.rendererDocumentId.length === 0
+  ) {
+    missing.push("rendererDocumentId");
+  }
+  if (
+    typeof diagnostics?.eventFile !== "string" ||
+    !/^[A-Za-z0-9%._-]+\.json$/.test(diagnostics.eventFile)
+  ) {
+    missing.push("eventFile");
+  }
   const directiveFallbacks = fallbacks?.assistantDirective;
   if (directiveFallbacks?.unregistered?.connected !== true) {
     missing.push("fallback.assistantDirective.unregistered");

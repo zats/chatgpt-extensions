@@ -437,7 +437,7 @@ async function start(options) {
 
 async function waitForRichEventLog(directory, unmounted, selectedFile) {
   const deadline = Date.now() + 30_000;
-  let lastError;
+  const failures = new Map();
   while (Date.now() < deadline) {
     let files = selectedFile ? [selectedFile] : [];
     if (!selectedFile && fs.existsSync(directory)) {
@@ -451,12 +451,15 @@ async function waitForRichEventLog(directory, unmounted, selectedFile) {
         assertRichProbeLifecycle(events, unmounted);
         return { file, events };
       } catch (error) {
-        lastError = error;
+        failures.set(path.basename(file), String(error));
       }
     }
     await sleep(100);
   }
-  throw new Error(`Timed out waiting for Rich Message Probe events: ${String(lastError)}`);
+  const details = failures.size > 0
+    ? JSON.stringify(Object.fromEntries(failures))
+    : "no event files were found";
+  throw new Error(`Timed out waiting for Rich Message Probe events: ${details}`);
 }
 
 const uiComposerActionPlacements = Object.freeze([
@@ -1035,7 +1038,12 @@ async function runGate(options) {
       "rich-message-probe",
       "events",
     );
-    let richEvents = await waitForRichEventLog(eventDirectory, false);
+    const richEventFile = path.join(eventDirectory, richDiagnostics.eventFile);
+    let richEvents = await waitForRichEventLog(
+      eventDirectory,
+      false,
+      richEventFile,
+    );
     fs.writeFileSync(path.join(session, "rich-content-unmount-request"), "unmount\n", { mode: 0o600 });
     richEvents = await waitForRichEventLog(eventDirectory, true, richEvents.file);
     const unmountDiagnostics = await waitForJson(

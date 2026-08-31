@@ -278,11 +278,12 @@ export class RichProbeEventRecorder {
       }),
     );
     const contents = serializeRichProbeEventLog(this.#events);
-    const write = this.#write.then(() =>
-      this.#storage.writeTextFile(this.#file, contents),
-    );
+    const persist = () => this.#storage.writeTextFile(this.#file, contents);
+    const write = this.#write.then(persist, persist);
     this.#write = write;
-    void write.catch(() => undefined);
+    void write.catch((error: unknown) => {
+      console.error("[rich-message-probe] failed to save event evidence", error);
+    });
     return write;
   }
 

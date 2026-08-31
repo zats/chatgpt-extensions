@@ -15,6 +15,7 @@ const {
   richContentOwnersReady,
   richContentRegistrationsReady,
   richContentUnmountDiagnostics,
+  richMessageProbeEventFile,
   startRendererLifecycle,
   uiSurfaceProbeEventFile,
 } = bootstrap;
@@ -275,6 +276,21 @@ test("UI surface event logs are isolated by renderer document", () => {
     uiSurfaceProbeEventFile("document:renderer-two"),
   );
   assert.throws(() => uiSurfaceProbeEventFile(""), /document ID is required/);
+});
+
+test("rich-message event logs are isolated by renderer document", () => {
+  assert.equal(
+    richMessageProbeEventFile("document:renderer/one"),
+    "document%3Arenderer%2Fone.json",
+  );
+  assert.notEqual(
+    richMessageProbeEventFile("document:renderer-one"),
+    richMessageProbeEventFile("document:renderer-two"),
+  );
+  assert.throws(
+    () => richMessageProbeEventFile(""),
+    /document ID is required/,
+  );
 });
 
 test("rich-content probe waits for eight surface variants and fallback registrations", () => {

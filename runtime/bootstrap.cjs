@@ -285,6 +285,13 @@ function uiSurfaceProbeEventFile(documentId) {
   return `events-${safeDocumentId}.json`;
 }
 
+function richMessageProbeEventFile(documentId) {
+  if (typeof documentId !== "string" || documentId.length === 0) {
+    throw new TypeError("Rich Message Probe document ID is required");
+  }
+  return `${encodeURIComponent(documentId)}.json`;
+}
+
 function rendererHostReadyExpression(appVersion) {
   return `Boolean(window.__CGPTX_HOST__ && window.__CGPTX_HOST__.version === ${JSON.stringify(appVersion)})`;
 }
@@ -1715,9 +1722,17 @@ ${code}
       richContentProbeRequested &&
       richContentProbeClaim.claim(document.id)
     ) {
-      let diagnostics = { stage: "registration-readiness" };
+      const probeDocument = Object.freeze({
+        rendererDocumentId: document.id,
+        eventFile: richMessageProbeEventFile(document.id),
+      });
+      let diagnostics = {
+        ...probeDocument,
+        stage: "registration-readiness",
+      };
       try {
         diagnostics = {
+          ...probeDocument,
           ...(await waitForRichContentDiagnostics(
             contents,
             document,
@@ -1735,6 +1750,7 @@ ${code}
           "window.__CGPTX_HOST__?._debug?.mountRichContentProbe?.() === true",
         );
         diagnostics = {
+          ...probeDocument,
           ...diagnostics,
           mounted,
           stage: "owner-render",
@@ -1754,6 +1770,7 @@ ${code}
           source: "first-party-cloud-conversation-turn",
         });
         diagnostics = {
+          ...probeDocument,
           ...diagnostics,
           mounted: true,
           cloudWarmup,
@@ -1769,6 +1786,7 @@ ${code}
           document,
         );
         diagnostics = {
+          ...probeDocument,
           ...(await readRichContentDiagnostics(contents)),
           mounted: true,
           cloudWarmup,
@@ -2280,6 +2298,7 @@ module.exports = Object.freeze({
   richContentOwnersReady,
   richContentRegistrationsReady,
   richContentUnmountDiagnostics,
+  richMessageProbeEventFile,
   startRendererLifecycle,
   uiSurfaceProbeEventFile,
 });
