@@ -1,0 +1,80 @@
+name: Retry transient ChatGPT rebind failure
+
+on:
+  workflow_run:
+    workflows:
+      - Rebind ChatGPT
+    types:
+      - completed
+
+permissions:
+  actions: read
+  checks: read
+  contents: write
+  issues: write
+
+jobs:
+  retry:
+    if: >-
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.head_branch == github.event.repository.default_branch &&
+      contains(fromJSON('["failure","startup_failure","stale"]'), github.event.workflow_run.conclusion)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out trusted automation
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - name: Read structured run, job, and annotation state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID" > "$RUNNER_TEMP/run.json"
+          gh api --paginate --slurp \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID/jobs?per_page=100" \
+            | jq '{jobs: [ .[] | .jobs[] ]}' > "$RUNNER_TEMP/jobs.json"
+          printf '[]\n' > "$RUNNER_TEMP/annotations.json"
+          while IFS= read -r check_run_id; do
+            gh api --paginate --slurp \
+              "repos/$GITHUB_REPOSITORY/check-runs/$check_run_id/annotations?per_page=100" \
+              | jq '[.[][]]' > "$RUNNER_TEMP/one-annotations.json"
+            jq -s 'add' \
+              "$RUNNER_TEMP/annotations.json" \
+              "$RUNNER_TEMP/one-annotations.json" \
+              > "$RUNNER_TEMP/merged-annotations.json"
+            mv "$RUNNER_TEMP/merged-annotations.json" "$RUNNER_TEMP/annotations.json"
+          done < <(jq -r '.jobs[].id' "$RUNNER_TEMP/jobs.json")
+      - name: Dispatch one trusted retry only for a narrow transient failure
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          decision="$(node scripts/retry-transient-rebind-failure.mjs \
+            "$RUNNER_TEMP/run.json" \
+            "$RUNNER_TEMP/jobs.json" \
+            "$RUNNER_TEMP/annotations.json")"
+          case "$decision" in
+            retry)
+              node scripts/trigger-chatgpt-rebind.mjs retry-transient \
+                --repository "$GITHUB_REPOSITORY" \
+                --worker-actor "$GITHUB_REPOSITORY_OWNER" \
+                --run-id "$SOURCE_RUN_ID"
+              ;;
+            ignore)
+              node scripts/trigger-chatgpt-rebind.mjs settle-failed \
+                --repository "$GITHUB_REPOSITORY" \
+                --worker-actor "$GITHUB_REPOSITORY_OWNER" \
+                --run-id "$SOURCE_RUN_ID"
+              ;;
+            *)
+              echo "Transient failure classifier returned an invalid decision" >&2
+              exit 1
+              ;;
+          esac

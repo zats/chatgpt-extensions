@@ -1,0 +1,2048 @@
+name: Rebind ChatGPT
+
+on:
+  issues:
+    types:
+      - opened
+      - reopened
+  issue_comment:
+    types:
+      - created
+  repository_dispatch:
+    types:
+      - chatgpt-rebind
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Rebind mode
+        required: true
+        type: choice
+        options:
+          - current
+          - backtest
+          - correction
+      version:
+        description: Exact numeric ChatGPT version
+        required: true
+        type: string
+      app_build:
+        description: Exact numeric CFBundleVersion from the appcast
+        required: true
+        type: string
+      download_url:
+        description: Exact full arm64 Sparkle enclosure URL
+        required: true
+        type: string
+      download_length:
+        description: Exact full archive byte length from the appcast
+        required: true
+        type: string
+      download_ed_signature:
+        description: Exact full archive Ed25519 signature from the appcast
+        required: true
+        type: string
+      issue_number:
+        description: Existing issue with the exact title, body, and pending label
+        required: true
+        type: string
+      snapshot_sha256:
+        description: Required only for backtest mode
+        required: false
+        type: string
+      batch_id:
+        description: Unique frozen batch attempt identity; required only for backtest mode
+        required: false
+        type: string
+      offset:
+        description: Required only for backtest mode
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  issues: read
+
+concurrency:
+  group: chatgpt-rebind-${{ github.event.issue.number || github.event.client_payload.issueNumber || inputs.issue_number }}
+  cancel-in-progress: false
+
+jobs:
+  request:
+    if: >-
+      github.event_name == 'repository_dispatch' ||
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event_name == 'issues' &&
+        (github.event.action == 'opened' || github.event.action == 'reopened') &&
+        github.event.issue.user.login == github.repository_owner &&
+        contains(github.event.issue.labels.*.name, 'chatgpt-binding') &&
+        contains(github.event.issue.labels.*.name, 'pending') &&
+        (
+          endsWith(github.event.issue.title, ' binding [current]') ||
+          endsWith(github.event.issue.title, ' binding [correction]')
+        )
+      ) ||
+      (
+        github.event_name == 'issue_comment' &&
+        github.event.action == 'created' &&
+        github.event.comment.body == 'retry' &&
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    outputs:
+      active: ${{ steps.claim.outputs.active }}
+      automatic-retry-source-run-id: ${{ steps.event.outputs.automatic-retry-source-run-id }}
+      base-sha: ${{ steps.claim.outputs.base-sha }}
+      app-build: ${{ steps.event.outputs.app-build }}
+      download-url: ${{ steps.event.outputs.download-url }}
+      download-length: ${{ steps.event.outputs.download-length }}
+      download-ed-signature: ${{ steps.event.outputs.download-ed-signature }}
+      existing: ${{ steps.claim.outputs.existing }}
+      binding-source-sha: ${{ steps.claim.outputs.binding-source-sha }}
+      generation: ${{ steps.claim.outputs.generation }}
+      issue-number: ${{ steps.event.outputs.issue-number }}
+      mode: ${{ steps.event.outputs.mode }}
+      recovery: ${{ steps.claim.outputs.recovery }}
+      recovery-sha: ${{ steps.claim.outputs.recovery-sha }}
+      validation-sha: ${{ steps.claim.outputs.validation-sha }}
+      retry: ${{ steps.event.outputs.retry }}
+      previous-run-id: ${{ steps.claim.outputs.previous-run-id }}
+      promotion: ${{ steps.claim.outputs.promotion }}
+      validation-only: ${{ steps.claim.outputs.validation-only }}
+      version: ${{ steps.event.outputs.version }}
+    steps:
+      - name: Check out trusted main automation
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - name: Validate event request
+        id: event
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          node scripts/trigger-chatgpt-rebind.mjs validate-event \
+            --event-name "$EVENT_NAME" \
+            --event "$GITHUB_EVENT_PATH" \
+            --output "$RUNNER_TEMP/rebind-request.json" \
+            --github-output "$GITHUB_OUTPUT"
+      - name: Claim current issue state
+        id: claim
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ steps.event.outputs.issue-number }}
+          AUTOMATIC_RETRY_SOURCE_RUN_ID: ${{ steps.event.outputs.automatic-retry-source-run-id }}
+          MODE: ${{ steps.event.outputs.mode }}
+          RETRY: ${{ steps.event.outputs.retry }}
+          VERSION: ${{ steps.event.outputs.version }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/issues/$ISSUE_NUMBER" > "$RUNNER_TEMP/live-issue.json"
+          node scripts/trigger-chatgpt-rebind.mjs validate-live-issue \
+            --request "$RUNNER_TEMP/rebind-request.json" \
+            --issue "$RUNNER_TEMP/live-issue.json" \
+            --worker-actor "$GITHUB_REPOSITORY_OWNER"
+
+          base_sha="$(git rev-parse HEAD)"
+          existing=false
+          generation=false
+          recovery=false
+          promotion=false
+          validation_only=false
+          if git cat-file -e "$base_sha:runtime/bindings/$VERSION/manifest.json" 2>/dev/null; then
+            existing=true
+          fi
+
+          {
+            echo "active=true"
+            echo "base-sha=$base_sha"
+            echo "existing=$existing"
+          } >> "$GITHUB_OUTPUT"
+
+          if [[ "$RETRY" == "true" ]]; then
+            gh api --paginate \
+              "repos/$GITHUB_REPOSITORY/issues/$ISSUE_NUMBER/comments?per_page=100" \
+              --jq '.[] | select(.user.login == "github-actions[bot]") | .body' \
+              > "$RUNNER_TEMP/rebind-bot-comments.txt"
+            previous_run_id="$(sed -nE 's#.*actions/runs/([0-9]+).*#\1#p' "$RUNNER_TEMP/rebind-bot-comments.txt" | tail -n 1)"
+            landed_sha="$(sed -nE 's/^Landed binding SHA: ([a-f0-9]{40})$/\1/p' "$RUNNER_TEMP/rebind-bot-comments.txt" | tail -n 1)"
+            if [[ -n "$landed_sha" ]] &&
+              git merge-base --is-ancestor "$landed_sha" "$base_sha" &&
+              git cat-file -e "$landed_sha:runtime/bindings/$VERSION/manifest.json" 2>/dev/null; then
+              git show "$landed_sha:runtime/bindings/$VERSION/manifest.json" \
+                > "$RUNNER_TEMP/recovery-manifest.json"
+              jq -e \
+                --arg version "$VERSION" \
+                --arg app_build "${{ steps.event.outputs.app-build }}" \
+                --arg url "${{ steps.event.outputs.download-url }}" \
+                --argjson length '${{ steps.event.outputs.download-length }}' \
+                --arg signature '${{ steps.event.outputs.download-ed-signature }}' \
+                '.version == $version and .appBuild == $app_build and .downloadUrl == $url and .downloadLength == $length and .downloadEdSignature == $signature' \
+                "$RUNNER_TEMP/recovery-manifest.json" >/dev/null
+              recovery=true
+              existing=true
+            fi
+            echo "previous-run-id=$previous_run_id" >> "$GITHUB_OUTPUT"
+            echo "recovery-sha=$landed_sha" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [[ "$recovery" != "true" ]]; then
+            case "$MODE" in
+              current)
+                if [[ "$existing" == "true" ]]; then
+                  validation_only=true
+                  current_version="$(git show "$base_sha:runtime/bindings/index.json" | jq -er .current)"
+                  if [[ "$current_version" != "$VERSION" ]]; then
+                    promotion=true
+                  fi
+                else
+                  generation=true
+                fi
+                ;;
+              correction)
+                [[ "$existing" == "true" ]] || {
+                  echo "Correction mode requires the existing target binding" >&2
+                  exit 1
+                }
+                generation=true
+                ;;
+              backtest)
+                if [[ "$existing" == "true" ]]; then
+                  validation_only=true
+                else
+                  generation=true
+                fi
+                ;;
+            esac
+          fi
+
+          validation_sha="$base_sha"
+          binding_source_sha=""
+          if [[ "$existing" == "true" ]]; then
+            binding_source_sha="$(git log -1 --format=%H "$validation_sha" -- "runtime/bindings/$VERSION")"
+            [[ "$binding_source_sha" =~ ^[a-f0-9]{40}$ ]] || {
+              echo "Could not resolve the exact binding-content source commit" >&2
+              exit 1
+            }
+            git cat-file -e "$binding_source_sha:runtime/bindings/$VERSION/manifest.json"
+          fi
+
+          for label in chatgpt-binding pending in-progress failed success; do
+            case "$label" in
+              chatgpt-binding) color=5319e7 ;;
+              pending) color=d4c5f9 ;;
+              in-progress) color=fbca04 ;;
+              failed) color=d73a4a ;;
+              success) color=0e8a16 ;;
+            esac
+            gh label create "$label" --repo "$GITHUB_REPOSITORY" --color "$color" --force
+          done
+          gh api --method PATCH \
+            "repos/$GITHUB_REPOSITORY/issues/$ISSUE_NUMBER" \
+            --input - <<'JSON'
+          {"state":"open","labels":["chatgpt-binding","in-progress"]}
+          JSON
+          gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --body "Binding run started: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          automatic_parent="${AUTOMATIC_RETRY_SOURCE_RUN_ID:-0}"
+          gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --body "<!-- chatgpt-rebind-run-lineage-v1 $GITHUB_RUN_ID $automatic_parent -->"
+          {
+            echo "generation=$generation"
+            echo "binding-source-sha=$binding_source_sha"
+            echo "promotion=$promotion"
+            echo "recovery=$recovery"
+            echo "validation-sha=$validation_sha"
+            echo "validation-only=$validation_only"
+          } >> "$GITHUB_OUTPUT"
+
+  existing-validation:
+    needs: request
+    if: >-
+      needs.request.result == 'success' &&
+      (needs.request.outputs.validation-only == 'true' || needs.request.outputs.recovery == 'true')
+    permissions:
+      contents: read
+    uses: ./.github/workflows/test.yml
+    with:
+      source_sha: ${{ needs.request.outputs.validation-sha }}
+      base_sha: ${{ needs.request.outputs.validation-sha }}
+      version: ${{ needs.request.outputs.version }}
+      app_build: ${{ needs.request.outputs.app-build }}
+      mode: ${{ needs.request.outputs.mode }}
+      download_url: ${{ needs.request.outputs.download-url }}
+      download_length: ${{ needs.request.outputs.download-length }}
+      download_ed_signature: ${{ needs.request.outputs.download-ed-signature }}
+      existing: true
+      live: true
+      auth_handoff_id: existing
+    secrets: inherit
+
+  refresh-existing-test-auth:
+    needs:
+      - request
+      - existing-validation
+    if: needs.existing-validation.result == 'success'
+    uses: ./.github/workflows/refresh-auth-handoff.yml
+    with:
+      artifact_name: ${{ needs.existing-validation.outputs.auth_artifact_name }}
+      artifact_run_id: ${{ github.run_id }}
+      role: test
+      source_run_id: ${{ github.run_id }}
+      source_run_attempt: ${{ needs.existing-validation.outputs.auth_source_run_attempt }}
+      target_environment: chatgpt-test
+      target_secret: CHATGPT_TEST_AUTH_JSON
+    secrets: inherit
+
+  existing-publish:
+    needs:
+      - request
+      - existing-validation
+      - refresh-existing-test-auth
+    if: >-
+      needs.request.outputs.validation-only == 'true' &&
+      needs.existing-validation.result == 'success' &&
+      needs.refresh-existing-test-auth.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    outputs:
+      url: ${{ steps.publish.outputs.url }}
+    steps:
+      - name: Check out exact validated source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.request.outputs.base-sha }}
+          fetch-depth: 0
+      - name: Verify or publish the exact immutable binding release
+        id: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ needs.request.outputs.binding-source-sha }}
+          VERSION: ${{ needs.request.outputs.version }}
+        run: |
+          node scripts/package-binding-release.mjs \
+            --version "$VERSION" \
+            --source "$SOURCE_SHA" \
+            --output "$RUNNER_TEMP/binding-release" \
+            --plan "$RUNNER_TEMP/binding-release.json"
+          url="$(scripts/publish-binding-release.sh "$RUNNER_TEMP/binding-release.json" "$GITHUB_REPOSITORY")"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+  prepare-promotion:
+    needs:
+      - request
+      - existing-validation
+      - refresh-existing-test-auth
+      - existing-publish
+    if: >-
+      needs.request.outputs.promotion == 'true' &&
+      needs.existing-validation.result == 'success' &&
+      needs.refresh-existing-test-auth.result == 'success' &&
+      needs.existing-publish.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    outputs:
+      branch: ${{ steps.commit.outputs.branch }}
+      fresh-base-required: ${{ steps.commit.outputs.fresh-base-required }}
+      head-sha: ${{ steps.commit.outputs.head-sha }}
+    steps:
+      - name: Check out the exact validated base
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.request.outputs.base-sha }}
+          fetch-depth: 0
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - name: Commit only the current-binding selector
+        id: commit
+        env:
+          APP_BUILD: ${{ needs.request.outputs.app-build }}
+          BASE_SHA: ${{ needs.request.outputs.base-sha }}
+          DOWNLOAD_ED_SIGNATURE: ${{ needs.request.outputs.download-ed-signature }}
+          DOWNLOAD_LENGTH: ${{ needs.request.outputs.download-length }}
+          DOWNLOAD_URL: ${{ needs.request.outputs.download-url }}
+          ISSUE_NUMBER: ${{ needs.request.outputs.issue-number }}
+          VERSION: ${{ needs.request.outputs.version }}
+        run: |
+          git fetch --no-tags origin main
+          test "$(git rev-parse FETCH_HEAD)" = "$BASE_SHA" || {
+            echo "fresh-base-required=true" >> "$GITHUB_OUTPUT"
+            echo "::error title=Fresh base required::chatgpt-rebind-fresh-base-required"
+            echo "Main changed after existing-binding validation; refusing stale promotion" >&2
+            exit 1
+          }
+          node scripts/promote-current-binding.mjs \
+            --repository "$GITHUB_WORKSPACE" \
+            --version "$VERSION" \
+            --app-build "$APP_BUILD" \
+            --download-url "$DOWNLOAD_URL" \
+            --download-length "$DOWNLOAD_LENGTH" \
+            --download-ed-signature "$DOWNLOAD_ED_SIGNATURE"
+          test "$(git diff --name-only)" = "runtime/bindings/index.json" || {
+            echo "Current promotion changed files outside the binding index" >&2
+            exit 1
+          }
+          git diff --check
+          git add runtime/bindings/index.json
+          branch="automation/chatgpt-$VERSION-$APP_BUILD-current-promotion-$ISSUE_NUMBER"
+          git switch -c "$branch"
+          git config user.name "chatgpt-extensions[bot]"
+          git config user.email "chatgpt-extensions[bot]@users.noreply.github.com"
+          git commit -m "Promote ChatGPT $VERSION binding"
+          head_sha="$(git rev-parse HEAD)"
+          test "$(git rev-parse HEAD^)" = "$BASE_SHA"
+          old_sha="$(git ls-remote --heads origin "refs/heads/$branch" | awk 'NR == 1 {print $1}')"
+          git push --force-with-lease="refs/heads/$branch:${old_sha}" origin "HEAD:refs/heads/$branch"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "head-sha=$head_sha" >> "$GITHUB_OUTPUT"
+
+  promotion-candidate-validation:
+    needs:
+      - request
+      - prepare-promotion
+    if: needs.prepare-promotion.result == 'success'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/test.yml
+    with:
+      source_sha: ${{ needs.prepare-promotion.outputs.head-sha }}
+      base_sha: ${{ needs.prepare-promotion.outputs.head-sha }}
+      version: ${{ needs.request.outputs.version }}
+      app_build: ${{ needs.request.outputs.app-build }}
+      mode: current
+      download_url: ${{ needs.request.outputs.download-url }}
+      download_length: ${{ needs.request.outputs.download-length }}
+      download_ed_signature: ${{ needs.request.outputs.download-ed-signature }}
+      existing: true
+      require_current: true
+      live: false
+    secrets: inherit
+
+  land-promotion:
+    needs:
+      - request
+      - prepare-promotion
+      - promotion-candidate-validation
+    if: needs.promotion-candidate-validation.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    outputs:
+      fresh-base-required: ${{ steps.land.outputs.fresh-base-required }}
+      head-sha: ${{ steps.land.outputs.head-sha }}
+    steps:
+      - name: Check out the tested promotion candidate
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.prepare-promotion.outputs.head-sha }}
+          fetch-depth: 0
+      - name: Fast-forward unchanged main to the promotion
+        id: land
+        env:
+          BASE_SHA: ${{ needs.request.outputs.base-sha }}
+          BRANCH: ${{ needs.prepare-promotion.outputs.branch }}
+          HEAD_SHA: ${{ needs.prepare-promotion.outputs.head-sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$HEAD_SHA"
+          test "$(git rev-parse HEAD^)" = "$BASE_SHA"
+          remote_candidate="$(git ls-remote --heads origin "refs/heads/$BRANCH" | awk 'NR == 1 {print $1}')"
+          test "$remote_candidate" = "$HEAD_SHA" || {
+            echo "Promotion branch no longer points to the tested commit" >&2
+            exit 1
+          }
+          git fetch --no-tags origin main
+          current_main="$(git rev-parse FETCH_HEAD)"
+          if [[ "$current_main" == "$BASE_SHA" ]]; then
+            git push origin "$HEAD_SHA:refs/heads/main"
+          elif [[ "$current_main" != "$HEAD_SHA" ]]; then
+            echo "fresh-base-required=true" >> "$GITHUB_OUTPUT"
+            echo "::error title=Fresh base required::chatgpt-rebind-fresh-base-required"
+            echo "Main changed after promotion validation; refusing stale landing" >&2
+            exit 1
+          fi
+          landed="$(git ls-remote --heads origin refs/heads/main | awk 'NR == 1 {print $1}')"
+          test "$landed" = "$HEAD_SHA"
+          echo "head-sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+
+  promotion-protected-validation:
+    needs:
+      - request
+      - land-promotion
+    if: needs.land-promotion.result == 'success'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/test.yml
+    with:
+      source_sha: ${{ needs.land-promotion.outputs.head-sha }}
+      base_sha: ${{ needs.land-promotion.outputs.head-sha }}
+      version: ${{ needs.request.outputs.version }}
+      app_build: ${{ needs.request.outputs.app-build }}
+      mode: current
+      download_url: ${{ needs.request.outputs.download-url }}
+      download_length: ${{ needs.request.outputs.download-length }}
+      download_ed_signature: ${{ needs.request.outputs.download-ed-signature }}
+      existing: true
+      require_current: true
+      live: true
+      auth_handoff_id: promotion-protected
+    secrets: inherit
+
+  refresh-promotion-protected-test-auth:
+    needs:
+      - request
+      - promotion-protected-validation
+    if: needs.promotion-protected-validation.result == 'success'
+    uses: ./.github/workflows/refresh-auth-handoff.yml
+    with:
+      artifact_name: ${{ needs.promotion-protected-validation.outputs.auth_artifact_name }}
+      artifact_run_id: ${{ github.run_id }}
+      role: test
+      source_run_id: ${{ github.run_id }}
+      source_run_attempt: ${{ needs.promotion-protected-validation.outputs.auth_source_run_attempt }}
+      target_environment: chatgpt-test
+      target_secret: CHATGPT_TEST_AUTH_JSON
+    secrets: inherit
+
+  generate:
+    needs: request
+    if: needs.request.result == 'success' && needs.request.outputs.generation == 'true'
+    runs-on: macos-26
+    timeout-minutes: 120
+    environment: codex-agent
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      agent-auth-artifact-name: ${{ steps.artifact-names.outputs.agent-auth }}
+      artifact-run-attempt: ${{ steps.artifact-names.outputs.run-attempt }}
+      encrypted-patch-artifact-name: ${{ steps.artifact-names.outputs.encrypted-patch }}
+    steps:
+      - name: Record durable artifact identities
+        id: artifact-names
+        run: |
+          {
+            echo "agent-auth=ci-auth-refresh-agent-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+            echo "encrypted-patch=encrypted-binding-patch-${{ needs.request.outputs.version }}-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+            echo "run-attempt=$GITHUB_RUN_ATTEMPT"
+          } >> "$GITHUB_OUTPUT"
+      - name: Check out exact base
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.request.outputs.base-sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install repository dependencies
+        run: npm ci
+      - name: Create a dedicated unprivileged generator account
+        id: isolation
+        run: |
+          agent_user="cxagent${GITHUB_RUN_ID: -6}${GITHUB_RUN_ATTEMPT}"
+          [[ "$agent_user" =~ ^[a-z][a-z0-9]{1,31}$ ]]
+          agent_uid=600
+          while /usr/bin/dscl . -search /Users UniqueID "$agent_uid" | /usr/bin/grep -q .; do
+            agent_uid=$((agent_uid + 1))
+          done
+          agent_home="/Users/$agent_user"
+          sudo /usr/bin/dscl . -create "/Users/$agent_user"
+          sudo /usr/bin/dscl . -create "/Users/$agent_user" UserShell /bin/bash
+          sudo /usr/bin/dscl . -create "/Users/$agent_user" RealName "ChatGPT binding generator"
+          sudo /usr/bin/dscl . -create "/Users/$agent_user" UniqueID "$agent_uid"
+          sudo /usr/bin/dscl . -create "/Users/$agent_user" PrimaryGroupID 20
+          sudo /usr/bin/dscl . -create "/Users/$agent_user" NFSHomeDirectory "$agent_home"
+          sudo /bin/mkdir -m 700 "$agent_home"
+          sudo /usr/sbin/chown "$(/usr/bin/id -u):$(/usr/bin/id -g)" "$agent_home"
+          if sudo -u "$agent_user" /usr/bin/sudo -n /usr/bin/true 2>/dev/null; then
+            echo "The generator account unexpectedly has sudo access" >&2
+            exit 1
+          fi
+          chmod 700 "$RUNNER_TEMP"
+          {
+            echo "user=$agent_user"
+            echo "uid=$agent_uid"
+            echo "home=$agent_home"
+          } >> "$GITHUB_OUTPUT"
+      - name: Download exact ChatGPT build
+        id: chatgpt
+        env:
+          APP_BUILD: ${{ needs.request.outputs.app-build }}
+          DOWNLOAD_URL: ${{ needs.request.outputs.download-url }}
+          DOWNLOAD_LENGTH: ${{ needs.request.outputs.download-length }}
+          DOWNLOAD_ED_SIGNATURE: ${{ needs.request.outputs.download-ed-signature }}
+          UNTRUSTED_HOME: ${{ steps.isolation.outputs.home }}
+          VERSION: ${{ needs.request.outputs.version }}
+        run: |
+          app_path="$(scripts/download-chatgpt-version.sh "$VERSION" "$APP_BUILD" "$DOWNLOAD_URL" "$DOWNLOAD_LENGTH" "$DOWNLOAD_ED_SIGNATURE" "$UNTRUSTED_HOME/stock-app")"
+          app_build="$(/usr/bin/plutil -extract CFBundleVersion raw "$app_path/Contents/Info.plist")"
+          asar_sha256="$(shasum -a 256 "$app_path/Contents/Resources/app.asar" | awk '{print $1}')"
+          {
+            echo "app-path=$app_path"
+            echo "app-build=$app_build"
+            echo "asar-sha256=$asar_sha256"
+          } >> "$GITHUB_OUTPUT"
+      - name: Prepare exact app research tree
+        id: research
+        env:
+          APP_PATH: ${{ steps.chatgpt.outputs.app-path }}
+          UNTRUSTED_HOME: ${{ steps.isolation.outputs.home }}
+          VERSION: ${{ needs.request.outputs.version }}
+        run: |
+          mkdir -p "$UNTRUSTED_HOME/tmp"
+          TMPDIR="$UNTRUSTED_HOME/tmp" \
+          .agents/skills/rebind-chatgpt-version/scripts/extract-app.sh \
+            --app "$APP_PATH" \
+            --expect-version "$VERSION" > "$RUNNER_TEMP/research.json"
+          jq -e --arg version "$VERSION" '.expectationsMet == true and .appVersion == $version' \
+            "$RUNNER_TEMP/research.json" >/dev/null
+          echo "directory=$(jq -er .extractDir "$RUNNER_TEMP/research.json")" >> "$GITHUB_OUTPUT"
+          echo "electron=$(jq -er .electronVersion "$RUNNER_TEMP/research.json")" >> "$GITHUB_OUTPUT"
+      - name: Install bundled Codex and private authentication
+        id: codex
+        env:
+          AGENT_AUTH_JSON: ${{ secrets.CODEX_AGENT_AUTH_JSON }}
+          APP_PATH: ${{ steps.chatgpt.outputs.app-path }}
+          AGENT_UID: ${{ steps.isolation.outputs.uid }}
+          AGENT_USER: ${{ steps.isolation.outputs.user }}
+          BASE_SHA: ${{ needs.request.outputs.base-sha }}
+          UNTRUSTED_HOME: ${{ steps.isolation.outputs.home }}
+        run: |
+          [[ -n "$AGENT_AUTH_JSON" ]] || {
+            echo "CODEX_AGENT_AUTH_JSON is required" >&2
+            exit 1
+          }
+          bin="$UNTRUSTED_HOME/bundled-codex-bin"
+          agent_home="$UNTRUSTED_HOME/codex-home"
+          worktree="$UNTRUSTED_HOME/worktree"
+          mkdir -p "$bin" "$agent_home"
+          chmod 700 "$agent_home"
+          for executable in codex codex-code-mode-host; do
+            install -m 755 "$APP_PATH/Contents/Resources/$executable" "$bin/$executable"
+          done
+          printf '%s' "$AGENT_AUTH_JSON" > "$agent_home/auth.json"
+          chmod 600 "$agent_home/auth.json"
+          printf '%s' "$AGENT_AUTH_JSON" > "$RUNNER_TEMP/initial-agent-auth.json"
+          chmod 600 "$RUNNER_TEMP/initial-agent-auth.json"
+          trusted_automation="$RUNNER_TEMP/trusted-automation"
+          mkdir -m 700 "$trusted_automation"
+          install -m 700 scripts/auth-handoff.mjs "$trusted_automation/auth-handoff.mjs"
+          install -m 700 scripts/owned-process.mjs "$trusted_automation/owned-process.mjs"
+          install -m 700 scripts/patch-payload.mjs "$trusted_automation/patch-payload.mjs"
+          install -m 700 scripts/run-owned-command.mjs "$trusted_automation/run-owned-command.mjs"
+          install -m 700 scripts/scan-patch-credentials.mjs "$trusted_automation/scan-patch-credentials.mjs"
+          install -m 700 scripts/validate-binding-change.mjs "$trusted_automation/validate-binding-change.mjs"
+          install -m 700 scripts/resolve-appcast-versions.mjs "$trusted_automation/resolve-appcast-versions.mjs"
+          /usr/bin/git clone --no-hardlinks "$GITHUB_WORKSPACE" "$worktree"
+          /usr/bin/git -C "$worktree" checkout --detach "$BASE_SHA"
+          sudo /usr/sbin/chown -R "$AGENT_UID:20" "$UNTRUSTED_HOME"
+          node_dir="$(dirname "$(command -v node)")"
+          sudo -u "$AGENT_USER" /usr/bin/env -i \
+            HOME="$UNTRUSTED_HOME" \
+            PATH="$node_dir:/usr/bin:/bin:/usr/sbin:/sbin" \
+            npm ci --prefix "$worktree"
+          sudo -u "$AGENT_USER" /usr/bin/env -i \
+            CODEX_HOME="$agent_home" \
+            HOME="$UNTRUSTED_HOME" \
+            PATH="$bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+            "$bin/codex" login status
+          {
+            echo "bin=$bin"
+            echo "agent-home=$agent_home"
+            echo "node-bin=$node_dir"
+            echo "worktree=$worktree"
+          } >> "$GITHUB_OUTPUT"
+      - name: Recover the exact trusted retry seed
+        id: retry-seed
+        env:
+          AGENT_CODEX_HOME: ${{ steps.codex.outputs.agent-home }}
+          AGENT_UID: ${{ steps.isolation.outputs.uid }}
+          AGENT_USER: ${{ steps.isolation.outputs.user }}
+          BASE_SHA: ${{ needs.request.outputs.base-sha }}
+          DOWNLOAD_URL: ${{ needs.request.outputs.download-url }}
+          DOWNLOAD_LENGTH: ${{ needs.request.outputs.download-length }}
+          DOWNLOAD_ED_SIGNATURE: ${{ needs.request.outputs.download-ed-signature }}
+          GH_TOKEN: ${{ github.token }}
+          APP_BUILD: ${{ needs.request.outputs.app-build }}
+          ISSUE_NUMBER: ${{ needs.request.outputs.issue-number }}
+          MODE: ${{ needs.request.outputs.mode }}
+          PREVIOUS_RUN_ID: ${{ needs.request.outputs.previous-run-id }}
+          RETRY: ${{ needs.request.outputs.retry }}
+          VERSION: ${{ needs.request.outputs.version }}
+          UNTRUSTED_HOME: ${{ steps.isolation.outputs.home }}
+          UNTRUSTED_WORKTREE: ${{ steps.codex.outputs.worktree }}
+        run: |
+          echo "source=fresh" >> "$GITHUB_OUTPUT"
+          echo "diagnostics=none" >> "$GITHUB_OUTPUT"
+          [[ "$RETRY" == "true" ]] || exit 0
+
+          retry_root="$RUNNER_TEMP/rebind-retry"
+          mkdir -p "$retry_root"
+          if [[ -n "$PREVIOUS_RUN_ID" ]]; then
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PREVIOUS_RUN_ID/artifacts?per_page=100" \
+              > "$retry_root/artifacts.json"
+            artifact_id="$(jq -r \
+              --arg prefix "binding-patch-$VERSION-$PREVIOUS_RUN_ID-" \
+              '[.artifacts[] | select(.expired == false and (.name | startswith($prefix)))] | sort_by(.created_at) | last | .id // empty' \
+              "$retry_root/artifacts.json")"
+            if [[ -n "$artifact_id" ]]; then
+              gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" \
+                > "$retry_root/artifact.zip"
+              unzip -Z1 "$retry_root/artifact.zip" > "$retry_root/entries.txt"
+              LC_ALL=C sort "$retry_root/entries.txt" > "$retry_root/entries.sorted.txt"
+              printf '%s\n' binding.patch change-validation.json \
+                | LC_ALL=C sort > "$retry_root/expected-entries.txt"
+              cmp -s "$retry_root/entries.sorted.txt" "$retry_root/expected-entries.txt" || {
+                echo "Retry artifact does not contain the exact trusted file set" >&2
+                exit 1
+              }
+              mkdir "$retry_root/artifact"
+              unzip -q "$retry_root/artifact.zip" -d "$retry_root/artifact"
+              for name in binding.patch change-validation.json; do
+                file="$retry_root/artifact/$name"
+                [[ -f "$file" && ! -L "$file" ]] || {
+                  echo "Retry artifact entry $name is not a regular file" >&2
+                  exit 1
+                }
+              done
+              entry_count="$(find "$retry_root/artifact" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d ' ')"
+              [[ "$entry_count" == "2" ]] || {
+                echo "Retry artifact extracted an unexpected entry" >&2
+                exit 1
+              }
+              node "$RUNNER_TEMP/trusted-automation/scan-patch-credentials.mjs" \
+                --candidate "$retry_root/artifact/binding.patch" \
+                --candidate "$retry_root/artifact/change-validation.json" \
+                --secret "$RUNNER_TEMP/initial-agent-auth.json"
+              diagnostics="$UNTRUSTED_HOME/retry-diagnostics"
+              sudo /bin/mkdir -m 700 "$diagnostics"
+              sudo /usr/bin/install -m 600 \
+                "$retry_root/artifact/binding.patch" \
+                "$diagnostics/binding.patch"
+              sudo /usr/bin/install -m 600 \
+                "$retry_root/artifact/change-validation.json" \
+                "$diagnostics/change-validation.json"
+              sudo /usr/sbin/chown -R "$AGENT_UID:20" "$diagnostics"
+              echo "diagnostics=$diagnostics" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+          branch="automation/chatgpt-$VERSION-$APP_BUILD-$MODE-$ISSUE_NUMBER"
+          candidate_sha="$(git ls-remote --heads origin "refs/heads/$branch" | awk 'NR == 1 {print $1}')"
+          seed_patch=""
+          seed_source=""
+          if [[ -n "$candidate_sha" ]]; then
+            git fetch --no-tags origin "$candidate_sha"
+            candidate_base="$(git rev-parse "$candidate_sha^")"
+            if [[ "$candidate_base" == "$BASE_SHA" ]]; then
+              seed_patch="$retry_root/candidate.patch"
+              git diff --binary "$BASE_SHA" "$candidate_sha" -- > "$seed_patch"
+              node "$RUNNER_TEMP/trusted-automation/scan-patch-credentials.mjs" \
+                --candidate "$seed_patch" \
+                --secret "$RUNNER_TEMP/initial-agent-auth.json"
+              node "$RUNNER_TEMP/trusted-automation/validate-binding-change.mjs" \
+                --repository "$GITHUB_WORKSPACE" \
+                --base "$BASE_SHA" \
+                --head "$candidate_sha" \
+                --version "$VERSION" \
+                --mode "$MODE" \
+                --app-build "$APP_BUILD" \
+                --download-url "$DOWNLOAD_URL" \
+                --download-length "$DOWNLOAD_LENGTH" \
+                --download-ed-signature "$DOWNLOAD_ED_SIGNATURE"
+              seed_source="candidate:$candidate_sha"
+            else
+              echo "Retry candidate was based on $candidate_base, not $BASE_SHA. It will remain unchanged and generation will start fresh; no rebase is allowed."
+            fi
+          fi
+          if [[ -z "$seed_patch" && -f "$retry_root/artifact/binding.patch" ]]; then
+            [[ -f "$retry_root/artifact/change-validation.json" ]] || {
+              echo "Retry patch has no trusted base evidence" >&2
+              exit 1
+            }
+            artifact_base="$(jq -er .base "$retry_root/artifact/change-validation.json")"
+            if [[ "$artifact_base" == "$BASE_SHA" ]]; then
+              seed_patch="$retry_root/artifact/binding.patch"
+              seed_source="artifact:$PREVIOUS_RUN_ID"
+              seed_root="$(mktemp -d "$RUNNER_TEMP/rebind-seed.XXXXXX")"
+              rmdir "$seed_root"
+              git worktree add --detach "$seed_root" "$BASE_SHA"
+              cleanup_seed() {
+                git worktree remove --force "$seed_root" >/dev/null 2>&1 || true
+              }
+              trap cleanup_seed EXIT
+              git -C "$seed_root" apply "$seed_patch"
+              node "$RUNNER_TEMP/trusted-automation/validate-binding-change.mjs" \
+                --repository "$seed_root" \
+                --base "$BASE_SHA" \
+                --version "$VERSION" \
+                --mode "$MODE" \
+                --app-build "$APP_BUILD" \
+                --download-url "$DOWNLOAD_URL" \
+                --download-length "$DOWNLOAD_LENGTH" \
+                --download-ed-signature "$DOWNLOAD_ED_SIGNATURE"
+              cleanup_seed
+              trap - EXIT
+            else
+              echo "Retry artifact was based on $artifact_base, not $BASE_SHA. It will remain unchanged and generation will start fresh; no rebase is allowed."
+            fi
+          fi
+
+          if [[ -n "$seed_patch" ]]; then
+            sudo -u "$AGENT_USER" /usr/bin/env -i \
+              HOME="$UNTRUSTED_HOME" \
+              PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+              /usr/bin/git -C "$UNTRUSTED_WORKTREE" apply "$seed_patch"
+            echo "source=$seed_source" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Generate an uncommitted exact binding
+        id: agent-run
+        continue-on-error: true
+        env:
+          APP_BUILD: ${{ steps.chatgpt.outputs.app-build }}
+          APP_PATH: ${{ steps.chatgpt.outputs.app-path }}
+          ASAR_SHA256: ${{ steps.chatgpt.outputs.asar-sha256 }}
+          BASE_SHA: ${{ needs.request.outputs.base-sha }}
+          CODEX_BIN: ${{ steps.codex.outputs.bin }}
+          CODEX_HOME_PATH: ${{ steps.codex.outputs.agent-home }}
+          NODE_BIN: ${{ steps.codex.outputs.node-bin }}
+          AGENT_USER: ${{ steps.isolation.outputs.user }}
+          DOWNLOAD_URL: ${{ needs.request.outputs.download-url }}
+          DOWNLOAD_LENGTH: ${{ needs.request.outputs.download-length }}
+          DOWNLOAD_ED_SIGNATURE: ${{ needs.request.outputs.download-ed-signature }}
+          ELECTRON_VERSION: ${{ steps.research.outputs.electron }}
+          MODE: ${{ needs.request.outputs.mode }}
+          RETRY_DIAGNOSTICS: ${{ steps.retry-seed.outputs.diagnostics }}
+          RETRY_SEED_SOURCE: ${{ steps.retry-seed.outputs.source }}
+          RESEARCH_DIRECTORY: ${{ steps.research.outputs.directory }}
+          UNTRUSTED_HOME: ${{ steps.isolation.outputs.home }}
+          UNTRUSTED_WORKTREE: ${{ steps.codex.outputs.worktree }}
+          VERSION: ${{ needs.request.outputs.version }}
+        run: |
+          if [[ "$MODE" == "correction" ]]; then
+            reference_version="$VERSION"
+          else
+            reference_version="$(jq -er .current "$UNTRUSTED_WORKTREE/runtime/bindings/index.json")"
+          fi
+          prompt="$RUNNER_TEMP/rebind-prompt.md"
+          cat > "$prompt" <<PROMPT
+          Use \$rebind-chatgpt-version to ${MODE} ChatGPT ${VERSION}.
+
+          Exact stock app: ${APP_PATH}
+          Prepared app.asar research tree: ${RESEARCH_DIRECTORY}
+          Exact app build: ${APP_BUILD}
+          Exact app.asar SHA-256: ${ASAR_SHA256}
+          Exact Electron version: ${ELECTRON_VERSION}
+          Exact full arm64 Sparkle URL: ${DOWNLOAD_URL}
+          Exact full archive length: ${DOWNLOAD_LENGTH}
+          Exact full archive Ed25519 signature: ${DOWNLOAD_ED_SIGNATURE}
+          Exact base commit: ${BASE_SHA}
+          Reference binding: runtime/bindings/${reference_version}
+          Trusted retry seed: ${RETRY_SEED_SOURCE}
+          Prior sanitized diagnostics: ${RETRY_DIAGNOSTICS}
+
+          Use only the supplied app and research tree. Do not download another app. Keep the public API, product extensions, runtime launcher, workflows, scripts, and every non-target binding unchanged. You may change only runtime/bindings/${VERSION}/**, runtime/bindings/index.json, APIs/builds/${VERSION}.d.ts, and APIs/builds/${VERSION}.md. Write binding manifest and index schema 2 with the exact app build, archive length, and archive signature above. In correction mode, replace only the existing target binding and its exact build documentation, preserve the current index selection unless the target is already current, and increment adapterVersion patch by exactly one. Otherwise create adapterVersion 1.0.0. Current mode must select the new binding in the index. Backtest mode must preserve the current index selection. Every manifest artifact must name an existing committed binding artifact and its exact SHA-256. Add DERIVATION.md and exact-build tests. Do not commit, stage, push, open a pull request, or weaken a test.
+
+          If a trusted retry seed or diagnostics path is present, inspect it first. Continue from that exact validated patch. Do not rebase it, discard it without evidence, or repeat a completed investigation.
+
+          Run all static and exact-binding tests that do not require authentication. Leave the completed binding uncommitted in the worktree. A separate test-auth-only runner owns the direct stock ChatGPT, API, UI, Reactions, Thread Colors, and Extensions composition live gates.
+          PROMPT
+          node_path="$(command -v node)"
+          set +e
+          /usr/bin/env -i \
+            "$node_path" \
+            "$RUNNER_TEMP/trusted-automation/run-owned-command.mjs" \
+            --timeout-ms 5400000 \
+            --stdin "$prompt" \
+            --output /dev/null \
+            -- /usr/bin/sudo -u "$AGENT_USER" /usr/bin/env -i \
+            CODEX_HOME="$CODEX_HOME_PATH" \
+            HOME="$UNTRUSTED_HOME" \
+            LANG=en_US.UTF-8 \
+            PATH="$CODEX_BIN:$NODE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+            TMPDIR="$UNTRUSTED_HOME/tmp" \
+            "$CODEX_BIN/codex" exec \
+            --ignore-user-config \
+            --strict-config \
+            --model gpt-5.6-sol \
+            --config 'model_reasoning_effort="xhigh"' \
+            --dangerously-bypass-approvals-and-sandbox \
+            --color never \
+            --json \
+            --cd "$UNTRUSTED_WORKTREE" \
+            -
+          status="$?"
+          set -e
+          exit "$status"
+      - name: Terminate and verify every untrusted process
+        id: terminate-agent
+        if: always() && steps.isolation.outcome == 'success'
+        env:
+          AGENT_UID: ${{ steps.isolation.outputs.uid }}
+        run: |
+          [[ "$AGENT_UID" =~ ^[0-9]+$ && "$AGENT_UID" -ge 600 ]]
+          sudo /usr/bin/pkill -KILL -u "$AGENT_UID" 2>/dev/null || true
+          for _ in 1 2 3 4 5; do
+            if ! /usr/bin/pgrep -u "$AGENT_UID" >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          echo "The untrusted generator still has a live process" >&2
+          exit 1
+      - name: Capture one raw untrusted patch
+        id: raw-patch
+        if: always() && steps.codex.outcome == 'success' && steps.terminate-agent.outcome == 'success'
+        env:
+          AGENT_USER: ${{ steps.isolation.outputs.user }}
+          BASE_SHA: ${{ needs.request.outputs.base-sha }}
+          UNTRUSTED_HOME: ${{ steps.isolation.outputs.home }}
+          UNTRUSTED_WORKTREE: ${{ steps.codex.outputs.worktree }}
+        run: |
+          raw_root="$(mktemp -d "$RUNNER_TEMP/raw-binding-artifact.XXXXXX")"
+          chmod 700 "$raw_root"
+          while IFS= read -r -d '' file; do
+            sudo -u "$AGENT_USER" /usr/bin/env -i \
+              HOME="$UNTRUSTED_HOME" \
+              PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+              /usr/bin/git -C "$UNTRUSTED_WORKTREE" \
+              -c core.fsmonitor=false -c core.hooksPath=/dev/null add -N -- "$file"
+          done < <(sudo -u "$AGENT_USER" /usr/bin/env -i \
+            HOME="$UNTRUSTED_HOME" \
+            PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+            /usr/bin/git -C "$UNTRUSTED_WORKTREE" \
+              -c core.fsmonitor=false ls-files -z --others --exclude-standard)
+          sudo -u "$AGENT_USER" /usr/bin/env -i \
+            HOME="$UNTRUSTED_HOME" \
+            PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+            /usr/bin/git -C "$UNTRUSTED_WORKTREE" \
+            -c core.fsmonitor=false -c core.hooksPath=/dev/null \
+            --no-pager diff --no-ext-diff --no-textconv --binary "$BASE_SHA" -- \
+            | /bin/cat > "$raw_root/binding.patch"
+          [[ -s "$raw_root/binding.patch" && ! -L "$raw_root/binding.patch" ]]
+          patch_bytes="$(/usr/bin/stat -f%z "$raw_root/binding.patch")"
+          [[ "$patch_bytes" -le 52428800 ]] || {
+            echo "Generated binding patch exceeds 50 MiB" >&2
+            exit 1
+          }
+          entries="$(find "$raw_root" -mindepth 1 -maxdepth 1 -print)"
+          [[ "$entries" == "$raw_root/binding.patch" ]]
+          echo "root=$raw_root" >> "$GITHUB_OUTPUT"
+      - name: Terminate and verify every capture process
+        id: terminate-capture
+        if: >-
+          always() &&
+          steps.isolation.outcome == 'success' &&
+          steps.terminate-agent.outcome == 'success'
+        env:
+          AGENT_UID: ${{ steps.isolation.outputs.uid }}
+        run: |
+          [[ "$AGENT_UID" =~ ^[0-9]+$ && "$AGENT_UID" -ge 600 ]]
+          sudo /usr/bin/pkill -KILL -u "$AGENT_UID" 2>/dev/null || true
+          for _ in 1 2 3 4 5; do
+            if ! /usr/bin/pgrep -u "$AGENT_UID" >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          echo "The untrusted capture still has a live process" >&2
+          exit 1
+      - name: Encrypt the raw patch for the trusted sanitizer
+        id: patch-handoff
+        if: >-
+          always() &&
+          steps.raw-patch.outcome == 'success' &&
+          steps.terminate-capture.outcome == 'success'
+        env:
+          HANDOFF_PUBLIC_KEY: ${{ vars.CODEX_AGENT_AUTH_HANDOFF_PUBLIC_KEY }}
+        run: |
+          [[ -n "$HANDOFF_PUBLIC_KEY" ]]
+          encrypted_root="$RUNNER_TEMP/encrypted-binding-patch"
+          payload_root="$RUNNER_TEMP/binding-patch-payload"
+          key_file="$RUNNER_TEMP/patch-handoff-public.pem"
+          rm -rf "$encrypted_root" "$payload_root"
+          install -d -m 700 "$encrypted_root" "$payload_root"
+          node "$RUNNER_TEMP/trusted-automation/patch-payload.mjs" pack \
+            "${{ steps.raw-patch.outputs.root }}/binding.patch" \
+            "$payload_root/patch.json"
+          printf '%s' "$HANDOFF_PUBLIC_KEY" > "$key_file"
+          chmod 600 "$key_file"
+          node "$RUNNER_TEMP/trusted-automation/auth-handoff.mjs" encrypt \
+            "$key_file" "$payload_root" "$encrypted_root" \
+            "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" \
+            codex-agent-sanitize CHATGPT_BINDING_PATCH patch
+          envelope="$encrypted_root/patch.json"
+          [[ -f "$envelope" && ! -L "$envelope" ]]
+          entries="$(find "$encrypted_root" -mindepth 1 -maxdepth 1 -print)"
+          [[ "$entries" == "$envelope" ]]
+          echo "root=$encrypted_root" >> "$GITHUB_OUTPUT"
+      - name: Upload only the encrypted untrusted patch
+        id: encrypted-patch-upload
+        if: always() && steps.patch-handoff.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ steps.artifact-names.outputs.encrypted-patch }}
+          path: ${{ steps.patch-handoff.outputs.root }}/patch.json
+          if-no-files-found: error
+          retention-days: 1
+      - name: Encrypt refreshed agent authentication
+        id: agent-auth-handoff
+        if: >-
+          always() &&
+          steps.codex.outcome == 'success' &&
+          steps.terminate-agent.outcome == 'success' &&
+          steps.terminate-capture.outcome == 'success'
+        env:
+          AGENT_CODEX_HOME: ${{ steps.codex.outputs.agent-home }}
+          HANDOFF_PUBLIC_KEY: ${{ vars.CODEX_AGENT_AUTH_HANDOFF_PUBLIC_KEY }}
+        run: |
+          [[ -n "$HANDOFF_PUBLIC_KEY" ]] || {
+            echo "CODEX_AGENT_AUTH_HANDOFF_PUBLIC_KEY is required" >&2
+            exit 1
+          }
+          candidate_root="$RUNNER_TEMP/auth-candidate-agent"
+          encrypted_root="$RUNNER_TEMP/auth-handoff-agent"
+          key_file="$RUNNER_TEMP/auth-handoff-public.pem"
+          rm -rf "$candidate_root" "$encrypted_root"
+          install -d -m 700 "$candidate_root" "$encrypted_root"
+          runner_uid="$(/usr/bin/id -u)"
+          runner_gid="$(/usr/bin/id -g)"
+          sudo /usr/bin/install -o "$runner_uid" -g "$runner_gid" -m 600 \
+            "$AGENT_CODEX_HOME/auth.json" "$candidate_root/agent.json"
+          auth_bytes="$(/usr/bin/stat -f%z "$candidate_root/agent.json")"
+          [[ "$auth_bytes" -gt 0 && "$auth_bytes" -le 1048576 ]]
+          node -e 'JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"))' \
+            "$candidate_root/agent.json"
+          printf '%s' "$HANDOFF_PUBLIC_KEY" > "$key_file"
+          chmod 600 "$key_file"
+          node "$RUNNER_TEMP/trusted-automation/auth-handoff.mjs" encrypt \
+            "$key_file" "$candidate_root" "$encrypted_root" \
+            "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" \
+            codex-agent CODEX_AGENT_AUTH_JSON agent
+          envelope="$encrypted_root/agent.json"
+          [[ -f "$envelope" && ! -L "$envelope" ]] || {
+            echo "Agent authentication handoff is not a regular file" >&2
+            exit 1
+          }
+          entries="$(find "$encrypted_root" -mindepth 1 -maxdepth 1 -print)"
+          [[ "$entries" == "$envelope" ]] || {
+            echo "Agent authentication handoff has an unexpected entry" >&2
+            exit 1
+          }
+          echo "available=true" >> "$GITHUB_OUTPUT"
+      - name: Upload encrypted agent authentication handoff
+        id: agent-auth-upload
+        if: always() && steps.agent-auth-handoff.outputs.available == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ steps.artifact-names.outputs.agent-auth }}
+          path: ${{ runner.temp }}/auth-handoff-agent/agent.json
+          if-no-files-found: error
+          retention-days: 1
+      - name: Remove app, research, and authentication
+        if: always()
+        env:
+          AGENT_HOME: ${{ steps.isolation.outputs.home }}
+          AGENT_UID: ${{ steps.isolation.outputs.uid }}
+          AGENT_USER: ${{ steps.isolation.outputs.user }}
+        run: |
+          if [[ "$AGENT_USER" =~ ^[a-z][a-z0-9]{1,31}$ &&
+                "$AGENT_HOME" == "/Users/$AGENT_USER" &&
+                "$AGENT_UID" =~ ^[0-9]+$ && "$AGENT_UID" -ge 600 ]]; then
+            sudo /usr/bin/pkill -KILL -u "$AGENT_UID" 2>/dev/null || true
+            sudo /usr/bin/dscl . -delete "/Users/$AGENT_USER" 2>/dev/null || true
+            sudo /bin/rm -rf "$AGENT_HOME"
+          fi
+          rm -rf \
+            "$RUNNER_TEMP/initial-agent-auth.json" \
+            "$RUNNER_TEMP/trusted-automation" \
+            "$RUNNER_TEMP/auth-candidate-agent" \
+            "$RUNNER_TEMP/auth-handoff-agent" \
+            "$RUNNER_TEMP/auth-handoff-public.pem" \
+            "$RUNNER_TEMP/rebind-prompt.md" \
+            "$RUNNER_TEMP/research.json" \
+            "$RUNNER_TEMP/rebind-diagnostics" \
+            "$RUNNER_TEMP/encrypted-binding-patch" \
+            "$RUNNER_TEMP/binding-patch-payload" \
+            "$RUNNER_TEMP/patch-handoff-public.pem" \
+            "$RUNNER_TEMP"/raw-binding-artifact.*
+      - name: Require successful bounded generator outputs
+        if: always()
+        env:
+          AGENT_RUN_OUTCOME: ${{ steps.agent-run.outcome }}
+          AUTH_HANDOFF_OUTCOME: ${{ steps.agent-auth-handoff.outcome }}
+          AUTH_UPLOAD_OUTCOME: ${{ steps.agent-auth-upload.outcome }}
+          TERMINATE_OUTCOME: ${{ steps.terminate-agent.outcome }}
+          RAW_PATCH_OUTCOME: ${{ steps.raw-patch.outcome }}
+          CAPTURE_TERMINATE_OUTCOME: ${{ steps.terminate-capture.outcome }}
+          PATCH_HANDOFF_OUTCOME: ${{ steps.patch-handoff.outcome }}
+          PATCH_UPLOAD_OUTCOME: ${{ steps.encrypted-patch-upload.outcome }}
+        run: |
+          [[ "$AGENT_RUN_OUTCOME" == "success" ]]
+          [[ "$TERMINATE_OUTCOME" == "success" ]]
+          [[ "$RAW_PATCH_OUTCOME" == "success" ]]
+          [[ "$CAPTURE_TERMINATE_OUTCOME" == "success" ]]
+          [[ "$PATCH_HANDOFF_OUTCOME" == "success" && "$PATCH_UPLOAD_OUTCOME" == "success" ]]
+          [[ "$AUTH_HANDOFF_OUTCOME" == "success" && "$AUTH_UPLOAD_OUTCOME" == "success" ]]
+
+  sanitize-generated-patch:
+    needs:
+      - request
+      - generate
+    if: always() && needs.generate.outputs.encrypted-patch-artifact-name != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: codex-agent-refresh
+    permissions:
+      actions: write
+      contents: read
+    outputs:
+      artifact-run-attempt: ${{ steps.artifact.outputs.run-attempt }}
+      patch-artifact-name: ${{ steps.artifact.outputs.name }}
+    steps:
+      - name: Record the sanitized artifact identity
+        id: artifact
+        run: |
+          {
+            echo "name=binding-patch-${{ needs.request.outputs.version }}-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+            echo "run-attempt=$GITHUB_RUN_ATTEMPT"
+          } >> "$GITHUB_OUTPUT"
+      - name: Check out exact trusted base
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.request.outputs.base-sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - name: Copy trusted validators before applying untrusted bytes
+        run: |
+          trusted="$RUNNER_TEMP/trusted-sanitizer"
+          install -d -m 700 "$trusted"
+          install -m 700 scripts/auth-handoff.mjs "$trusted/auth-handoff.mjs"
+          install -m 700 scripts/patch-payload.mjs "$trusted/patch-payload.mjs"
+          install -m 700 scripts/scan-patch-credentials.mjs "$trusted/scan-patch-credentials.mjs"
+          install -m 700 scripts/validate-binding-change.mjs "$trusted/validate-binding-change.mjs"
+          install -m 700 scripts/resolve-appcast-versions.mjs "$trusted/resolve-appcast-versions.mjs"
+      - name: Materialize only the sanitizer private inputs
+        id: auth
+        env:
+          CURRENT_AUTH_JSON: ${{ secrets.CURRENT_AUTH_JSON }}
+          HANDOFF_PRIVATE_KEY: ${{ secrets.AUTH_HANDOFF_PRIVATE_KEY }}
+        run: |
+          [[ -n "$CURRENT_AUTH_JSON" && -n "$HANDOFF_PRIVATE_KEY" ]]
+          printf '%s' "$CURRENT_AUTH_JSON" > "$RUNNER_TEMP/current-agent-auth.json"
+          printf '%s' "$HANDOFF_PRIVATE_KEY" > "$RUNNER_TEMP/handoff-private.pem"
+          chmod 600 "$RUNNER_TEMP/current-agent-auth.json" "$RUNNER_TEMP/handoff-private.pem"
+      - name: Download the encrypted patch
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ needs.generate.outputs.encrypted-patch-artifact-name }}
+          path: ${{ runner.temp }}/encrypted-binding-patch
+      - name: Download the encrypted refreshed agent authentication
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ needs.generate.outputs.agent-auth-artifact-name }}
+          path: ${{ runner.temp }}/encrypted-agent-auth
+      - name: Decrypt and verify both bounded generator outputs
+        env:
+          SOURCE_ATTEMPT: ${{ needs.generate.outputs.artifact-run-attempt }}
+        run: |
+          patch_envelope="$RUNNER_TEMP/encrypted-binding-patch/patch.json"
+          agent_envelope="$RUNNER_TEMP/encrypted-agent-auth/agent.json"
+          [[ -f "$patch_envelope" && ! -L "$patch_envelope" ]]
+          [[ -f "$agent_envelope" && ! -L "$agent_envelope" ]]
+          [[ "$(find "$RUNNER_TEMP/encrypted-binding-patch" -mindepth 1 -maxdepth 1 -print)" == "$patch_envelope" ]]
+          [[ "$(find "$RUNNER_TEMP/encrypted-agent-auth" -mindepth 1 -maxdepth 1 -print)" == "$agent_envelope" ]]
+          install -d -m 700 "$RUNNER_TEMP/decrypted-patch" "$RUNNER_TEMP/decrypted-agent-auth"
+          node "$RUNNER_TEMP/trusted-sanitizer/auth-handoff.mjs" decrypt \
+            "$RUNNER_TEMP/handoff-private.pem" \
+            "$RUNNER_TEMP/encrypted-binding-patch" \
+            "$RUNNER_TEMP/decrypted-patch" \
+            "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$SOURCE_ATTEMPT" \
+            codex-agent-sanitize CHATGPT_BINDING_PATCH patch
+          node "$RUNNER_TEMP/trusted-sanitizer/auth-handoff.mjs" decrypt \
+            "$RUNNER_TEMP/handoff-private.pem" \
+            "$RUNNER_TEMP/encrypted-agent-auth" \
+            "$RUNNER_TEMP/decrypted-agent-auth" \
+            "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$SOURCE_ATTEMPT" \
+            codex-agent CODEX_AGENT_AUTH_JSON agent
+          node "$RUNNER_TEMP/trusted-sanitizer/patch-payload.mjs" unpack \
+            "$RUNNER_TEMP/decrypted-patch/patch.json" \
+            "$RUNNER_TEMP/binding.patch"
+          [[ -f "$RUNNER_TEMP/binding.patch" && ! -L "$RUNNER_TEMP/binding.patch" ]]
+          [[ -f "$RUNNER_TEMP/decrypted-agent-auth/agent.json" && \
+             ! -L "$RUNNER_TEMP/decrypted-agent-auth/agent.json" ]]
+      - name: Scan, reproduce, and validate the decrypted uncommitted patch
+        id: sanitize
+        env:
+          APP_BUILD: ${{ needs.request.outputs.app-build }}
+          BASE_SHA: ${{ needs.request.outputs.base-sha }}
+          DOWNLOAD_ED_SIGNATURE: ${{ needs.request.outputs.download-ed-signature }}
+          DOWNLOAD_LENGTH: ${{ needs.request.outputs.download-length }}
+          DOWNLOAD_URL: ${{ needs.request.outputs.download-url }}
+          MODE: ${{ needs.request.outputs.mode }}
+          VERSION: ${{ needs.request.outputs.version }}
+        run: |
+          raw_patch="$RUNNER_TEMP/binding.patch"
+          [[ -f "$raw_patch" && ! -L "$raw_patch" ]]
+          node "$RUNNER_TEMP/trusted-sanitizer/scan-patch-credentials.mjs" \
+            --candidate "$raw_patch" \
+            --secret "$RUNNER_TEMP/current-agent-auth.json" \
+            --secret "$RUNNER_TEMP/decrypted-agent-auth/agent.json"
+          git apply --index "$raw_patch"
+          git diff --cached --check
+          validation="$RUNNER_TEMP/change-validation.json"
+          node "$RUNNER_TEMP/trusted-sanitizer/validate-binding-change.mjs" \
+            --repository "$GITHUB_WORKSPACE" \
+            --base "$BASE_SHA" \
+            --version "$VERSION" \
+            --mode "$MODE" \
+            --app-build "$APP_BUILD" \
+            --download-url "$DOWNLOAD_URL" \
+            --download-length "$DOWNLOAD_LENGTH" \
+            --download-ed-signature "$DOWNLOAD_ED_SIGNATURE" \
+            > "$validation"
+          clean_root="$(mktemp -d "$RUNNER_TEMP/rebind-clean.XXXXXX")"
+          rmdir "$clean_root"
+          git worktree add --detach "$clean_root" "$BASE_SHA"
+          cleanup_worktree() {
+            git worktree remove --force "$clean_root" >/dev/null 2>&1 || true
+          }
+          trap cleanup_worktree EXIT
+          git -C "$clean_root" apply --index "$raw_patch"
+          node "$RUNNER_TEMP/trusted-sanitizer/validate-binding-change.mjs" \
+            --repository "$clean_root" \
+            --base "$BASE_SHA" \
+            --version "$VERSION" \
+            --mode "$MODE" \
+            --app-build "$APP_BUILD" \
+            --download-url "$DOWNLOAD_URL" \
+            --download-length "$DOWNLOAD_LENGTH" \
+            --download-ed-signature "$DOWNLOAD_ED_SIGNATURE"
+          cleanup_worktree
+          trap - EXIT
+          staged="$(mktemp -d "$RUNNER_TEMP/sanitized-binding-artifact.XXXXXX")"
+          chmod 700 "$staged"
+          install -m 600 "$raw_patch" "$staged/binding.patch"
+          install -m 600 "$validation" "$staged/change-validation.json"
+          entry_count="$(find "$staged" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d ' ')"
+          [[ "$entry_count" == "2" ]]
+          node "$RUNNER_TEMP/trusted-sanitizer/scan-patch-credentials.mjs" \
+            --candidate "$staged/binding.patch" \
+            --candidate "$staged/change-validation.json" \
+            --secret "$RUNNER_TEMP/current-agent-auth.json" \
+            --secret "$RUNNER_TEMP/decrypted-agent-auth/agent.json"
+          echo "root=$staged" >> "$GITHUB_OUTPUT"
+      - name: Upload only the validated fixed artifact
+        if: steps.sanitize.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ steps.artifact.outputs.name }}
+          path: |
+            ${{ steps.sanitize.outputs.root }}/binding.patch
+            ${{ steps.sanitize.outputs.root }}/change-validation.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Delete the encrypted untrusted patch artifact
+        if: always()
+        env:
+          ARTIFACT_NAME: ${{ needs.generate.outputs.encrypted-patch-artifact-name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          artifact_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" \
+            --jq ".artifacts[] | select(.name == \"$ARTIFACT_NAME\") | .id" | tail -1)"
+          [[ -z "$artifact_id" ]] || gh api --method DELETE \
+            "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id"
+      - name: Remove authentication and untrusted bytes
+        if: always()
+        run: |
+          rm -rf \
+            "$RUNNER_TEMP/current-agent-auth.json" \
+            "$RUNNER_TEMP/handoff-private.pem" \
+            "$RUNNER_TEMP/encrypted-binding-patch" \
+            "$RUNNER_TEMP/encrypted-agent-auth" \
+            "$RUNNER_TEMP/decrypted-patch" \
+            "$RUNNER_TEMP/decrypted-agent-auth" \
+            "$RUNNER_TEMP/binding.patch" \
+            "$RUNNER_TEMP/change-validation.json" \
+            "$RUNNER_TEMP/trusted-sanitizer" \
+            "$RUNNER_TEMP"/sanitized-binding-artifact.*
+
+  refresh-agent-auth:
+    needs:
+      - request
+      - generate
+    if: needs.generate.result == 'success'
+    uses: ./.github/workflows/refresh-auth-handoff.yml
+    with:
+      artifact_name: ${{ needs.generate.outputs.agent-auth-artifact-name }}
+      artifact_run_id: ${{ github.run_id }}
+      role: agent
+      source_run_id: ${{ github.run_id }}
+      source_run_attempt: ${{ needs.generate.outputs.artifact-run-attempt }}
+      target_environment: codex-agent
+      target_secret: CODEX_AGENT_AUTH_JSON
+    secrets: inherit
+
+  precommit-static-validation:
+    needs:
+      - request
+      - generate
+      - sanitize-generated-patch
+    if: >-
+      needs.generate.result == 'success' &&
+      needs.sanitize-generated-patch.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Check out exact unmodified base
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.request.outputs.base-sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install trusted dependencies
+        run: |
+          npm ci
+          mkdir -m 700 "$RUNNER_TEMP/trusted-validator"
+          install -m 700 scripts/validate-binding-change.mjs \
+            "$RUNNER_TEMP/trusted-validator/validate-binding-change.mjs"
+          install -m 700 scripts/resolve-appcast-versions.mjs \
+            "$RUNNER_TEMP/trusted-validator/resolve-appcast-versions.mjs"
+      - name: Download the generated patch
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ needs.sanitize-generated-patch.outputs.patch-artifact-name }}
+          path: ${{ runner.temp }}/binding-patch
+      - name: Apply and validate the exact uncommitted patch
+        env:
+          APP_BUILD: ${{ needs.request.outputs.app-build }}
+          BASE_SHA: ${{ needs.request.outputs.base-sha }}
+          DOWNLOAD_ED_SIGNATURE: ${{ needs.request.outputs.download-ed-signature }}
+          DOWNLOAD_LENGTH: ${{ needs.request.outputs.download-length }}
+          DOWNLOAD_URL: ${{ needs.request.outputs.download-url }}
+          MODE: ${{ needs.request.outputs.mode }}
+          VERSION: ${{ needs.request.outputs.version }}
+        run: |
+          git apply --index "$RUNNER_TEMP/binding-patch/binding.patch"
+          git diff --cached --check
+          node "$RUNNER_TEMP/trusted-validator/validate-binding-change.mjs" \
+            --repository "$GITHUB_WORKSPACE" \
+            --base "$BASE_SHA" \
+            --version "$VERSION" \
+            --mode "$MODE" \
+            --app-build "$APP_BUILD" \
+            --download-url "$DOWNLOAD_URL" \
+            --download-length "$DOWNLOAD_LENGTH" \
+            --download-ed-signature "$DOWNLOAD_ED_SIGNATURE"
+      - name: Run the no-secret static gate before any test authentication
+        run: >-
+          node scripts/run-version-gate.mjs
+          --phase static
+          --result "$RUNNER_TEMP/precommit-static-gate.json"
+
+  precommit-validation:
+    needs:
+      - request
+      - generate
+      - sanitize-generated-patch
+      - refresh-agent-auth
+      - precommit-static-validation
+    if: >-
+      needs.generate.result == 'success' &&
+      needs.sanitize-generated-patch.result == 'success' &&
+      needs.refresh-agent-auth.result == 'success' &&
+      needs.precommit-static-validation.result == 'success'
+    runs-on: macos-26
+    timeout-minutes: 70
+    environment: chatgpt-test
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      test-auth-artifact-name: ${{ steps.test-auth-handoff.outputs.artifact-name }}
+      auth-source-run-attempt: ${{ steps.test-auth-handoff.outputs.source-run-attempt }}
+    steps:
+      - name: Check out exact unmodified base
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.request.outputs.base-sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install trusted dependencies
+        run: |
+          npm ci
+          mkdir -m 700 "$RUNNER_TEMP/trusted-validator"
+          install -m 700 scripts/validate-binding-change.mjs \
+            "$RUNNER_TEMP/trusted-validator/validate-binding-change.mjs"
+          install -m 700 scripts/resolve-appcast-versions.mjs \
+            "$RUNNER_TEMP/trusted-validator/resolve-appcast-versions.mjs"
+      - name: Download the generated patch
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ needs.sanitize-generated-patch.outputs.patch-artifact-name }}
+          path: ${{ runner.temp }}/binding-patch
+      - name: Apply and validate the exact uncommitted patch
+        env:
+          APP_BUILD: ${{ needs.request.outputs.app-build }}
+          BASE_SHA: ${{ needs.request.outputs.base-sha }}
+          DOWNLOAD_ED_SIGNATURE: ${{ needs.request.outputs.download-ed-signature }}
+          DOWNLOAD_LENGTH: ${{ needs.request.outputs.download-length }}
+          DOWNLOAD_URL: ${{ needs.request.outputs.download-url }}
+          MODE: ${{ needs.request.outputs.mode }}
+          VERSION: ${{ needs.request.outputs.version }}
+        run: |
+          git apply --index "$RUNNER_TEMP/binding-patch/binding.patch"
+          git diff --cached --check
+          node "$RUNNER_TEMP/trusted-validator/validate-binding-change.mjs" \
+            --repository "$GITHUB_WORKSPACE" \
+            --base "$BASE_SHA" \
+            --version "$VERSION" \
+            --mode "$MODE" \
+            --app-build "$APP_BUILD" \
+            --download-url "$DOWNLOAD_URL" \
+            --download-length "$DOWNLOAD_LENGTH" \
+            --download-ed-signature "$DOWNLOAD_ED_SIGNATURE"
+      - name: Build only the trusted live-gate inputs before authentication exists
+        run: |
+          node scripts/build-runtime.mjs
+          for directory in \
+            extensions/extensions \
+            extensions/reactions \
+            extensions/thread-colors \
+            test-fixtures/native-main-probe \
+            test-fixtures/ui-surface-probe \
+            test-fixtures/rich-message-probe; do
+            node scripts/build-extension.mjs "$directory"
+          done
+      - name: Download and verify the exact ChatGPT build
+        id: chatgpt
+        env:
+          APP_BUILD: ${{ needs.request.outputs.app-build }}
+          DOWNLOAD_ED_SIGNATURE: ${{ needs.request.outputs.download-ed-signature }}
+          DOWNLOAD_LENGTH: ${{ needs.request.outputs.download-length }}
+          DOWNLOAD_URL: ${{ needs.request.outputs.download-url }}
+          VERSION: ${{ needs.request.outputs.version }}
+        run: |
+          app_path="$(scripts/download-chatgpt-version.sh "$VERSION" "$APP_BUILD" "$DOWNLOAD_URL" "$DOWNLOAD_LENGTH" "$DOWNLOAD_ED_SIGNATURE" "$RUNNER_TEMP/chatgpt-app")"
+          echo "app-path=$app_path" >> "$GITHUB_OUTPUT"
+      - name: Materialize only the dedicated test authentication
+        id: auth
+        env:
+          TEST_AUTH_JSON: ${{ secrets.CHATGPT_TEST_AUTH_JSON }}
+        run: |
+          [[ -n "$TEST_AUTH_JSON" ]] || {
+            echo "CHATGPT_TEST_AUTH_JSON is required" >&2
+            exit 1
+          }
+          printf '%s' "$TEST_AUTH_JSON" > "$RUNNER_TEMP/initial-test-auth.json"
+          chmod 600 "$RUNNER_TEMP/initial-test-auth.json"
+      - name: Run the isolated direct stock gate before the first commit
+        env:
+          APP_PATH: ${{ steps.chatgpt.outputs.app-path }}
+          VERSION: ${{ needs.request.outputs.version }}
+        run: |
+          scripts/run-isolated-live-gate.sh \
+            "$GITHUB_WORKSPACE" \
+            "$APP_PATH" \
+            "$RUNNER_TEMP/initial-test-auth.json" \
+            "runtime/bindings/$VERSION" \
+            "$RUNNER_TEMP/version-gate.json" \
+            "$RUNNER_TEMP/final-test-auth.json" \
+            "$(command -v node)"
+      - name: Scan test evidence for authentication
+        id: evidence-scan
+        if: always() && steps.auth.outcome == 'success'
+        run: |
+          [[ -f "$RUNNER_TEMP/final-test-auth.json" && \
+             ! -L "$RUNNER_TEMP/final-test-auth.json" ]]
+          [[ ! -f "$RUNNER_TEMP/version-gate.json" ]] || \
+          node scripts/scan-patch-credentials.mjs \
+            --candidate "$RUNNER_TEMP/version-gate.json" \
+            --secret "$RUNNER_TEMP/initial-test-auth.json" \
+            --secret "$RUNNER_TEMP/final-test-auth.json"
+      - name: Upload pre-commit gate evidence
+        if: always() && steps.evidence-scan.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: precommit-version-gate-${{ needs.request.outputs.version }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/version-gate.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Encrypt refreshed test authentication
+        id: test-auth-handoff
+        if: always() && steps.auth.outcome == 'success'
+        env:
+          HANDOFF_PUBLIC_KEY: ${{ vars.CHATGPT_TEST_AUTH_HANDOFF_PUBLIC_KEY }}
+        run: |
+          [[ -n "$HANDOFF_PUBLIC_KEY" ]] || {
+            echo "CHATGPT_TEST_AUTH_HANDOFF_PUBLIC_KEY is required" >&2
+            exit 1
+          }
+          candidate_root="$RUNNER_TEMP/auth-candidate-test"
+          encrypted_root="$RUNNER_TEMP/auth-handoff-test"
+          key_file="$RUNNER_TEMP/auth-handoff-public.pem"
+          rm -rf "$candidate_root" "$encrypted_root"
+          install -d -m 700 "$candidate_root" "$encrypted_root"
+          install -m 600 "$RUNNER_TEMP/final-test-auth.json" "$candidate_root/test.json"
+          printf '%s' "$HANDOFF_PUBLIC_KEY" > "$key_file"
+          chmod 600 "$key_file"
+          node scripts/auth-handoff.mjs encrypt \
+            "$key_file" "$candidate_root" "$encrypted_root" \
+            "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" \
+            chatgpt-test CHATGPT_TEST_AUTH_JSON test
+          envelope="$encrypted_root/test.json"
+          [[ -f "$envelope" && ! -L "$envelope" ]] || {
+            echo "Test authentication handoff is not a regular file" >&2
+            exit 1
+          }
+          entries="$(find "$encrypted_root" -mindepth 1 -maxdepth 1 -print)"
+          [[ "$entries" == "$envelope" ]] || {
+            echo "Test authentication handoff has an unexpected entry" >&2
+            exit 1
+          }
+          {
+            echo "available=true"
+            echo "artifact-name=ci-auth-refresh-test-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-precommit"
+            echo "source-run-attempt=$GITHUB_RUN_ATTEMPT"
+          } >> "$GITHUB_OUTPUT"
+      - name: Upload encrypted test authentication handoff
+        if: always() && steps.test-auth-handoff.outputs.available == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ steps.test-auth-handoff.outputs.artifact-name }}
+          path: ${{ runner.temp }}/auth-handoff-test/test.json
+          if-no-files-found: error
+          retention-days: 1
+      - name: Remove app and test authentication
+        if: always()
+        run: >-
+          rm -rf
+          "$RUNNER_TEMP/chatgpt-app"
+          "$RUNNER_TEMP/initial-test-auth.json"
+          "$RUNNER_TEMP/final-test-auth.json"
+          "$RUNNER_TEMP/version-gate.json"
+          "$RUNNER_TEMP/auth-candidate-test"
+          "$RUNNER_TEMP/auth-handoff-test"
+          "$RUNNER_TEMP/auth-handoff-public.pem"
+
+  refresh-precommit-test-auth:
+    needs:
+      - request
+      - precommit-validation
+    if: needs.precommit-validation.result == 'success'
+    uses: ./.github/workflows/refresh-auth-handoff.yml
+    with:
+      artifact_name: ${{ needs.precommit-validation.outputs.test-auth-artifact-name }}
+      artifact_run_id: ${{ github.run_id }}
+      role: test
+      source_run_id: ${{ github.run_id }}
+      source_run_attempt: ${{ needs.precommit-validation.outputs.auth-source-run-attempt }}
+      target_environment: chatgpt-test
+      target_secret: CHATGPT_TEST_AUTH_JSON
+    secrets: inherit
+
+  prepare-candidate:
+    needs:
+      - request
+      - sanitize-generated-patch
+      - precommit-static-validation
+      - precommit-validation
+      - refresh-precommit-test-auth
+    if: >-
+      needs.precommit-validation.result == 'success' &&
+      needs.precommit-static-validation.result == 'success' &&
+      needs.refresh-precommit-test-auth.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    outputs:
+      branch: ${{ steps.commit.outputs.branch }}
+      fresh-base-required: ${{ steps.commit.outputs.fresh-base-required }}
+      head-sha: ${{ steps.commit.outputs.head-sha }}
+    steps:
+      - name: Check out exact base
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.request.outputs.base-sha }}
+          fetch-depth: 0
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - name: Download validated patch
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ needs.sanitize-generated-patch.outputs.patch-artifact-name }}
+          path: ${{ runner.temp }}/binding-patch
+      - name: Create the first commit without rebasing
+        id: commit
+        env:
+          BASE_SHA: ${{ needs.request.outputs.base-sha }}
+          APP_BUILD: ${{ needs.request.outputs.app-build }}
+          DOWNLOAD_URL: ${{ needs.request.outputs.download-url }}
+          DOWNLOAD_LENGTH: ${{ needs.request.outputs.download-length }}
+          DOWNLOAD_ED_SIGNATURE: ${{ needs.request.outputs.download-ed-signature }}
+          ISSUE_NUMBER: ${{ needs.request.outputs.issue-number }}
+          MODE: ${{ needs.request.outputs.mode }}
+          VERSION: ${{ needs.request.outputs.version }}
+        run: |
+          git fetch --no-tags origin main
+          test "$(git rev-parse FETCH_HEAD)" = "$BASE_SHA" || {
+            echo "fresh-base-required=true" >> "$GITHUB_OUTPUT"
+            echo "::error title=Fresh base required::chatgpt-rebind-fresh-base-required"
+            echo "Main changed after the uncommitted gate; refusing to rebase tested files" >&2
+            exit 1
+          }
+          git apply --index "$RUNNER_TEMP/binding-patch/binding.patch"
+          git diff --cached --check
+          node scripts/validate-binding-change.mjs \
+            --base "$BASE_SHA" \
+            --version "$VERSION" \
+            --mode "$MODE" \
+            --app-build "$APP_BUILD" \
+            --download-url "$DOWNLOAD_URL" \
+            --download-length "$DOWNLOAD_LENGTH" \
+            --download-ed-signature "$DOWNLOAD_ED_SIGNATURE"
+          branch="automation/chatgpt-$VERSION-$APP_BUILD-$MODE-$ISSUE_NUMBER"
+          git switch -c "$branch"
+          git config user.name "chatgpt-extensions[bot]"
+          git config user.email "chatgpt-extensions[bot]@users.noreply.github.com"
+          git commit -m "Bind ChatGPT $VERSION ($MODE)"
+          head_sha="$(git rev-parse HEAD)"
+          test "$(git rev-parse HEAD^)" = "$BASE_SHA"
+          old_sha="$(git ls-remote --heads origin "refs/heads/$branch" | awk 'NR == 1 {print $1}')"
+          git push --force-with-lease="refs/heads/$branch:${old_sha}" origin "HEAD:refs/heads/$branch"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "head-sha=$head_sha" >> "$GITHUB_OUTPUT"
+
+  candidate-validation:
+    needs:
+      - request
+      - prepare-candidate
+    if: needs.prepare-candidate.result == 'success'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/test.yml
+    with:
+      source_sha: ${{ needs.prepare-candidate.outputs.head-sha }}
+      base_sha: ${{ needs.request.outputs.base-sha }}
+      version: ${{ needs.request.outputs.version }}
+      app_build: ${{ needs.request.outputs.app-build }}
+      mode: ${{ needs.request.outputs.mode }}
+      download_url: ${{ needs.request.outputs.download-url }}
+      download_length: ${{ needs.request.outputs.download-length }}
+      download_ed_signature: ${{ needs.request.outputs.download-ed-signature }}
+      existing: false
+      live: true
+      auth_handoff_id: candidate
+    secrets: inherit
+
+  refresh-candidate-test-auth:
+    needs:
+      - request
+      - candidate-validation
+    if: needs.candidate-validation.result == 'success'
+    uses: ./.github/workflows/refresh-auth-handoff.yml
+    with:
+      artifact_name: ${{ needs.candidate-validation.outputs.auth_artifact_name }}
+      artifact_run_id: ${{ github.run_id }}
+      role: test
+      source_run_id: ${{ github.run_id }}
+      source_run_attempt: ${{ needs.candidate-validation.outputs.auth_source_run_attempt }}
+      target_environment: chatgpt-test
+      target_secret: CHATGPT_TEST_AUTH_JSON
+    secrets: inherit
+
+  land:
+    needs:
+      - request
+      - prepare-candidate
+      - candidate-validation
+      - refresh-candidate-test-auth
+    if: >-
+      needs.candidate-validation.result == 'success' &&
+      needs.refresh-candidate-test-auth.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    outputs:
+      fresh-base-required: ${{ steps.land.outputs.fresh-base-required }}
+      head-sha: ${{ steps.land.outputs.head-sha }}
+    steps:
+      - name: Check out tested candidate
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.prepare-candidate.outputs.head-sha }}
+          fetch-depth: 0
+      - name: Fast-forward unchanged main
+        id: land
+        env:
+          BASE_SHA: ${{ needs.request.outputs.base-sha }}
+          BRANCH: ${{ needs.prepare-candidate.outputs.branch }}
+          HEAD_SHA: ${{ needs.prepare-candidate.outputs.head-sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$HEAD_SHA"
+          test "$(git rev-parse HEAD^)" = "$BASE_SHA"
+          remote_candidate="$(git ls-remote --heads origin "refs/heads/$BRANCH" | awk 'NR == 1 {print $1}')"
+          test "$remote_candidate" = "$HEAD_SHA" || {
+            echo "Candidate branch no longer points to the tested commit" >&2
+            exit 1
+          }
+          git fetch --no-tags origin main
+          current_main="$(git rev-parse FETCH_HEAD)"
+          if [[ "$current_main" == "$BASE_SHA" ]]; then
+            git push origin "$HEAD_SHA:refs/heads/main"
+          elif [[ "$current_main" != "$HEAD_SHA" ]]; then
+            echo "fresh-base-required=true" >> "$GITHUB_OUTPUT"
+            echo "::error title=Fresh base required::chatgpt-rebind-fresh-base-required"
+            echo "Main changed after candidate validation; refusing stale landing" >&2
+            exit 1
+          fi
+          landed="$(git ls-remote --heads origin refs/heads/main | awk 'NR == 1 {print $1}')"
+          test "$landed" = "$HEAD_SHA"
+          echo "head-sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+
+  protected-validation:
+    needs:
+      - request
+      - land
+    if: needs.land.result == 'success'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/test.yml
+    with:
+      source_sha: ${{ needs.land.outputs.head-sha }}
+      base_sha: ${{ needs.request.outputs.base-sha }}
+      version: ${{ needs.request.outputs.version }}
+      app_build: ${{ needs.request.outputs.app-build }}
+      mode: ${{ needs.request.outputs.mode }}
+      download_url: ${{ needs.request.outputs.download-url }}
+      download_length: ${{ needs.request.outputs.download-length }}
+      download_ed_signature: ${{ needs.request.outputs.download-ed-signature }}
+      existing: false
+      live: true
+      auth_handoff_id: protected
+    secrets: inherit
+
+  refresh-protected-test-auth:
+    needs:
+      - request
+      - protected-validation
+    if: needs.protected-validation.result == 'success'
+    uses: ./.github/workflows/refresh-auth-handoff.yml
+    with:
+      artifact_name: ${{ needs.protected-validation.outputs.auth_artifact_name }}
+      artifact_run_id: ${{ github.run_id }}
+      role: test
+      source_run_id: ${{ github.run_id }}
+      source_run_attempt: ${{ needs.protected-validation.outputs.auth_source_run_attempt }}
+      target_environment: chatgpt-test
+      target_secret: CHATGPT_TEST_AUTH_JSON
+    secrets: inherit
+
+  publish:
+    needs:
+      - request
+      - prepare-candidate
+      - land
+      - protected-validation
+      - refresh-protected-test-auth
+    if: >-
+      needs.protected-validation.result == 'success' &&
+      needs.refresh-protected-test-auth.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    outputs:
+      url: ${{ steps.publish.outputs.url }}
+    steps:
+      - name: Check out landed source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.land.outputs.head-sha }}
+          fetch-depth: 0
+      - name: Package and publish immutable binding
+        id: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ needs.land.outputs.head-sha }}
+          VERSION: ${{ needs.request.outputs.version }}
+        run: |
+          node scripts/package-binding-release.mjs \
+            --version "$VERSION" \
+            --source "$HEAD_SHA" \
+            --output "$RUNNER_TEMP/binding-release" \
+            --plan "$RUNNER_TEMP/binding-release.json"
+          url="$(scripts/publish-binding-release.sh "$RUNNER_TEMP/binding-release.json" "$GITHUB_REPOSITORY")"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+      - name: Delete temporary candidate branch
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ needs.prepare-candidate.outputs.branch }}
+        run: gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/$BRANCH"
+
+  recovery-publish:
+    needs:
+      - request
+      - existing-validation
+      - refresh-existing-test-auth
+    if: >-
+      needs.request.outputs.recovery == 'true' &&
+      needs.existing-validation.result == 'success' &&
+      needs.refresh-existing-test-auth.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    outputs:
+      url: ${{ steps.publish.outputs.url }}
+    steps:
+      - name: Check out landed source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.request.outputs.base-sha }}
+          fetch-depth: 0
+      - name: Repair immutable binding publication
+        id: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ needs.request.outputs.binding-source-sha }}
+          VERSION: ${{ needs.request.outputs.version }}
+        run: |
+          node scripts/package-binding-release.mjs \
+            --version "$VERSION" \
+            --source "$HEAD_SHA" \
+            --output "$RUNNER_TEMP/binding-release" \
+            --plan "$RUNNER_TEMP/binding-release.json"
+          url="$(scripts/publish-binding-release.sh "$RUNNER_TEMP/binding-release.json" "$GITHUB_REPOSITORY")"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+  finalize:
+    if: always() && needs.request.outputs.active == 'true'
+    needs:
+      - request
+      - existing-validation
+      - existing-publish
+      - refresh-existing-test-auth
+      - prepare-promotion
+      - promotion-candidate-validation
+      - land-promotion
+      - promotion-protected-validation
+      - refresh-promotion-protected-test-auth
+      - generate
+      - sanitize-generated-patch
+      - refresh-agent-auth
+      - prepare-candidate
+      - candidate-validation
+      - refresh-candidate-test-auth
+      - land
+      - protected-validation
+      - refresh-protected-test-auth
+      - publish
+      - recovery-publish
+      - precommit-static-validation
+      - precommit-validation
+      - refresh-precommit-test-auth
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      issues: write
+    steps:
+      - name: Finalize durable issue state
+        id: state
+        env:
+          CANDIDATE_RESULT: ${{ needs.candidate-validation.result }}
+          EXISTING_RESULT: ${{ needs.existing-validation.result }}
+          EXISTING_PUBLISH_RESULT: ${{ needs.existing-publish.result }}
+          EXISTING_PUBLISH_URL: ${{ needs.existing-publish.outputs.url }}
+          EXISTING_REFRESH_RESULT: ${{ needs.refresh-existing-test-auth.result }}
+          GENERATE_RESULT: ${{ needs.generate.result }}
+          SANITIZE_RESULT: ${{ needs.sanitize-generated-patch.result }}
+          AGENT_REFRESH_RESULT: ${{ needs.refresh-agent-auth.result }}
+          GENERATION: ${{ needs.request.outputs.generation }}
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ needs.request.outputs.issue-number }}
+          LAND_RESULT: ${{ needs.land.result }}
+          LANDED_SHA: ${{ needs.land.outputs.head-sha }}
+          LAND_FRESH_BASE: ${{ needs.land.outputs.fresh-base-required }}
+          PROMOTION: ${{ needs.request.outputs.promotion }}
+          PROMOTION_PREPARE_RESULT: ${{ needs.prepare-promotion.result }}
+          PROMOTION_PREPARE_FRESH_BASE: ${{ needs.prepare-promotion.outputs.fresh-base-required }}
+          PROMOTION_CANDIDATE_RESULT: ${{ needs.promotion-candidate-validation.result }}
+          PROMOTION_LAND_RESULT: ${{ needs.land-promotion.result }}
+          PROMOTION_LANDED_SHA: ${{ needs.land-promotion.outputs.head-sha }}
+          PROMOTION_LAND_FRESH_BASE: ${{ needs.land-promotion.outputs.fresh-base-required }}
+          PROMOTION_PROTECTED_RESULT: ${{ needs.promotion-protected-validation.result }}
+          PROMOTION_REFRESH_RESULT: ${{ needs.refresh-promotion-protected-test-auth.result }}
+          PREPARE_RESULT: ${{ needs.prepare-candidate.result }}
+          PREPARE_FRESH_BASE: ${{ needs.prepare-candidate.outputs.fresh-base-required }}
+          PRECOMMIT_STATIC_RESULT: ${{ needs.precommit-static-validation.result }}
+          PRECOMMIT_RESULT: ${{ needs.precommit-validation.result }}
+          PRECOMMIT_REFRESH_RESULT: ${{ needs.refresh-precommit-test-auth.result }}
+          PROTECTED_RESULT: ${{ needs.protected-validation.result }}
+          CANDIDATE_REFRESH_RESULT: ${{ needs.refresh-candidate-test-auth.result }}
+          PROTECTED_REFRESH_RESULT: ${{ needs.refresh-protected-test-auth.result }}
+          PUBLISH_RESULT: ${{ needs.publish.result }}
+          PUBLISH_URL: ${{ needs.publish.outputs.url }}
+          RECOVERY: ${{ needs.request.outputs.recovery }}
+          RECOVERY_PUBLISH_RESULT: ${{ needs.recovery-publish.result }}
+          RECOVERY_URL: ${{ needs.recovery-publish.outputs.url }}
+          VALIDATION_ONLY: ${{ needs.request.outputs.validation-only }}
+          VERSION: ${{ needs.request.outputs.version }}
+        run: |
+          success=false
+          publication_url=""
+          if [[ "$VALIDATION_ONLY" == "true" && "$PROMOTION" != "true" &&
+                "$EXISTING_RESULT" == "success" &&
+                "$EXISTING_REFRESH_RESULT" == "success" &&
+                "$EXISTING_PUBLISH_RESULT" == "success" ]]; then
+            success=true
+            publication_url="$EXISTING_PUBLISH_URL"
+          elif [[ "$PROMOTION" == "true" &&
+                  "$EXISTING_RESULT" == "success" &&
+                  "$EXISTING_REFRESH_RESULT" == "success" &&
+                  "$EXISTING_PUBLISH_RESULT" == "success" &&
+                  "$PROMOTION_PREPARE_RESULT" == "success" &&
+                  "$PROMOTION_CANDIDATE_RESULT" == "success" &&
+                  "$PROMOTION_LAND_RESULT" == "success" &&
+                  "$PROMOTION_PROTECTED_RESULT" == "success" &&
+                  "$PROMOTION_REFRESH_RESULT" == "success" ]]; then
+            success=true
+            publication_url="$EXISTING_PUBLISH_URL"
+          elif [[ "$RECOVERY" == "true" &&
+                  "$EXISTING_RESULT" == "success" &&
+                  "$EXISTING_REFRESH_RESULT" == "success" &&
+                  "$RECOVERY_PUBLISH_RESULT" == "success" ]]; then
+            success=true
+            publication_url="$RECOVERY_URL"
+          elif [[ "$GENERATION" == "true" &&
+                  "$GENERATE_RESULT" == "success" &&
+                  "$SANITIZE_RESULT" == "success" &&
+                  "$AGENT_REFRESH_RESULT" == "success" &&
+                  "$PRECOMMIT_STATIC_RESULT" == "success" &&
+                  "$PRECOMMIT_RESULT" == "success" &&
+                  "$PRECOMMIT_REFRESH_RESULT" == "success" &&
+                  "$PREPARE_RESULT" == "success" &&
+                  "$CANDIDATE_RESULT" == "success" &&
+                  "$CANDIDATE_REFRESH_RESULT" == "success" &&
+                  "$LAND_RESULT" == "success" &&
+                  "$PROTECTED_RESULT" == "success" &&
+                  "$PROTECTED_REFRESH_RESULT" == "success" &&
+                  "$PUBLISH_RESULT" == "success" ]]; then
+            success=true
+            publication_url="$PUBLISH_URL"
+          fi
+
+          if [[ "$success" == "true" ]]; then
+            gh api --method PATCH \
+              "repos/$GITHUB_REPOSITORY/issues/$ISSUE_NUMBER" \
+              --input - <<'JSON'
+          {"state":"closed","labels":["chatgpt-binding","success"]}
+          JSON
+            if [[ "$RECOVERY" == "true" ]]; then
+              body="Recovered ChatGPT $VERSION binding passed the exact static and direct stock ChatGPT gate. Immutable publication is complete and verified: $publication_url"
+            elif [[ "$PROMOTION" == "true" ]]; then
+              body="Existing ChatGPT $VERSION binding passed the exact live gate, its immutable release was verified, and it is now the selected current binding: $publication_url"
+            elif [[ "$VALIDATION_ONLY" == "true" ]]; then
+              body="Existing ChatGPT $VERSION binding passed the exact static and direct stock ChatGPT gate. Immutable release verified: $publication_url"
+            else
+              body="ChatGPT $VERSION binding passed pre-commit, exact-candidate, and protected validation. Published: $publication_url"
+            fi
+            gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "$body"
+            echo "outcome=success" >> "$GITHUB_OUTPUT"
+          else
+            fresh_base_required=false
+            if [[ "$PREPARE_FRESH_BASE" == "true" ||
+                  "$LAND_FRESH_BASE" == "true" ||
+                  "$PROMOTION_PREPARE_FRESH_BASE" == "true" ||
+                  "$PROMOTION_LAND_FRESH_BASE" == "true" ]]; then
+              fresh_base_required=true
+            fi
+            if [[ "$fresh_base_required" == "true" ]]; then
+              gh api --method PATCH \
+                "repos/$GITHUB_REPOSITORY/issues/$ISSUE_NUMBER" \
+                --input - <<'JSON'
+          {"state":"open","labels":["chatgpt-binding","pending"]}
+          JSON
+              body="The tested patch used a stale main commit. One bounded trusted run can start again from the fresh base; the tested patch will not be rebased."
+              echo "outcome=retrying" >> "$GITHUB_OUTPUT"
+            else
+              body="Binding run failed and is waiting for the bounded transient-failure classifier: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+              echo "outcome=failed" >> "$GITHUB_OUTPUT"
+            fi
+            if [[ "$LAND_RESULT" == "success" && -n "$LANDED_SHA" ]]; then
+              body="$body
+
+          Landed binding SHA: $LANDED_SHA"
+            elif [[ "$PROMOTION_LAND_RESULT" == "success" && -n "$PROMOTION_LANDED_SHA" ]]; then
+              body="$body
+
+          Landed binding SHA: $PROMOTION_LANDED_SHA"
+            fi
+            gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "$body"
+          fi
+      - name: Delete temporary promotion branch
+        if: needs.prepare-promotion.result == 'success'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ needs.prepare-promotion.outputs.branch }}
+        run: gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/$BRANCH"
+      - name: Check out trusted batch continuation
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Set up Node for batch continuation
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - name: Continue or stop an exact frozen backtest batch
+        if: steps.state.outputs.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ needs.request.outputs.issue-number }}
+          OUTCOME: ${{ steps.state.outputs.outcome }}
+        run: |
+          node scripts/trigger-chatgpt-rebind.mjs continue-batch \
+            --repository "$GITHUB_REPOSITORY" \
+            --issue-number "$ISSUE_NUMBER" \
+            --outcome "$OUTCOME"
+      - name: Preserve failed workflow conclusion
+        if: steps.state.outputs.outcome != 'success'
+        run: exit 1

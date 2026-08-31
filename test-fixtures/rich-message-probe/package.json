@@ -1,0 +1,35 @@
+{
+  "name": "@chatgptx/test-rich-message-probe",
+  "displayName": "Rich Message Probe",
+  "id": "rich-message-probe",
+  "version": "0.1.0",
+  "description": "Test-only extension that verifies rich assistant-content and conversation-item render definitions.",
+  "private": true,
+  "type": "module",
+  "chatgptx": {
+    "api": "0.2.0",
+    "renderer": "dist/renderer.cjs",
+    "capabilities": [
+      "ui.contribute",
+      "ui.definition.assistant-directive",
+      "ui.definition.assistant-content-reference",
+      "ui.definition.assistant-code-block",
+      "ui.definition.conversation-item"
+    ]
+  },
+  "scripts": {
+    "build": "node ../../scripts/build-extension.mjs .",
+    "test": "npm run typecheck && npm run build && node --import tsx --test test/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@chatgptx/api": "file:../../APIs",
+    "@types/node": "24.13.3",
+    "esbuild": "0.25.9",
+    "tsx": "4.20.5",
+    "typescript": "6.0.3"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

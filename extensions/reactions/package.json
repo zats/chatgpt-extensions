@@ -1,0 +1,43 @@
+{
+  "id": "reactions",
+  "name": "@chatgptx/extension-reactions",
+  "displayName": "Reactions",
+  "description": "Adds configurable emoji reactions to selected assistant response text.",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "chatgptx": {
+    "api": "0.2.0",
+    "renderer": "dist/renderer.cjs",
+    "settings": {
+      "renderer": "dist/settings.cjs",
+      "sectionId": "settings"
+    },
+    "capabilities": [
+      "settings.read",
+      "settings.write",
+      "ui.definition.command",
+      "ui.definition.settings-section",
+      "ui.point.assistant-selection.actions"
+    ]
+  },
+  "scripts": {
+    "build": "node ../../scripts/build-extension.mjs .",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "npm run typecheck && npm run build && node --import tsx --test test/*.test.ts"
+  },
+  "devDependencies": {
+    "@chatgptx/api": "file:../../APIs",
+    "@types/node": "24.13.3",
+    "esbuild": "0.25.9",
+    "tsx": "4.20.5",
+    "typescript": "6.0.3"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

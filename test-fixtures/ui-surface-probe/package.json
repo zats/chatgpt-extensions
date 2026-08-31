@@ -1,0 +1,43 @@
+{
+  "name": "@chatgptx/test-ui-surface-probe",
+  "displayName": "UI Surface Probe",
+  "id": "ui-surface-probe",
+  "version": "0.1.0",
+  "description": "Test-only extension that verifies ChatGPT-owned home, composer, and sidebar contribution points.",
+  "private": true,
+  "type": "module",
+  "chatgptx": {
+    "api": "0.2.0",
+    "renderer": "dist/renderer.cjs",
+    "capabilities": [
+      "ui.contribute",
+      "ui.point.home.new-chat-suggestions",
+      "ui.point.home.announcements",
+      "ui.point.sidebar.destinations",
+      "ui.point.sidebar.product-mode.menu",
+      "ui.point.composer.footer.leading",
+      "ui.point.composer.footer.trailing",
+      "ui.point.composer.action-bar.leading",
+      "ui.point.composer.action-bar.trailing",
+      "ui.point.composer.utility.leading",
+      "ui.point.composer.utility.trailing",
+      "ui.point.composer.attachments",
+      "ui.definition.composer-action"
+    ]
+  },
+  "scripts": {
+    "build": "node ../../scripts/build-extension.mjs .",
+    "test": "npm run typecheck && npm run build && node --import tsx --test test/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@chatgptx/api": "file:../../APIs",
+    "@types/node": "24.13.3",
+    "esbuild": "0.25.9",
+    "tsx": "4.20.5",
+    "typescript": "6.0.3"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

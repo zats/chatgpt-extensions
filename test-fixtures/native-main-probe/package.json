@@ -1,0 +1,36 @@
+{
+  "name": "@chatgptx/test-native-main-probe",
+  "displayName": "Native Main Probe",
+  "id": "native-main-probe",
+  "version": "0.1.0",
+  "description": "Test-only extension that verifies public Electron-main, Node, Objective-C, owner, channel, and cleanup contracts.",
+  "private": true,
+  "type": "module",
+  "chatgptx": {
+    "api": "0.2.0",
+    "main": "dist/main.cjs",
+    "renderer": "dist/renderer.cjs",
+    "capabilities": [
+      "native.electron",
+      "native.node",
+      "native.objc",
+      "runtime.info"
+    ]
+  },
+  "scripts": {
+    "build": "node ../../scripts/build-extension.mjs .",
+    "test": "npm run typecheck && npm run build && node --import tsx --test test/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@chatgptx/api": "file:../../APIs",
+    "@types/node": "24.13.3",
+    "electron": "42.3.0",
+    "esbuild": "0.25.9",
+    "tsx": "4.20.5",
+    "typescript": "6.0.3"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

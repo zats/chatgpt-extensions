@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 2,
+  "version": "26.825.51511",
+  "appBuild": "7377",
+  "appAsarSha256": "f56ac8d5254a10fc4a04e7417fa787d135c3bbca49bad7d668d4ae65833d40c7",
+  "downloadUrl": "https://persistent.oaistatic.com/codex-app-prod/ChatGPT-darwin-arm64-26.825.51511.zip",
+  "downloadLength": 595263123,
+  "downloadEdSignature": "9ig6An9v69dIpSgoSRGs6PoTr4sP4Dug9HcyWm4vMEB7W4owrEQT5cN+csTux1MdN70stJXuq1U6KRxzqBw9CQ==",
+  "apiVersion": "0.2.0",
+  "adapterVersion": "1.0.0",
+  "artifacts": {
+    "host": {
+      "path": "host.js",
+      "sha256": "b69b974d320b8ec59b9167ba9ea47e4d037ad2608e42ddbedab855de9bf1e37e"
+    },
+    "patch": {
+      "path": "host-source-patch.cjs",
+      "sha256": "d0e73d4f6f7cd94fffdda520695b43ec1e204c483fdf135650457913bf8bef95"
+    },
+    "rendererEntry": {
+      "path": "renderer-entry.ts",
+      "sha256": "7e0a00faed7c4946261514442550a7e7ddf316f8080e400bfb123aa61d83e69d"
+    },
+    "rendererAdapterSource": {
+      "path": "renderer-adapter.ts",
+      "sha256": "4c971623b753f3c57ed628c5a703a7fe3fc87185e3f4db82cee59ebef8b7151d"
+    },
+    "rendererBundle": {
+      "path": "renderer-host.js",
+      "sha256": "8541c787474f01c2838ebf31418a48258e9149795ccfddedfb20007d37bde31f"
+    }
+  }
+}

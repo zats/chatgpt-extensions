@@ -1,0 +1,41 @@
+{
+  "name": "@chatgptx/extension-thread-colors",
+  "displayName": "Thread Colors",
+  "id": "thread-colors",
+  "version": "0.1.0",
+  "description": "Adds per-thread colors to ChatGPT thread headers, menus, and sidebar rows.",
+  "private": true,
+  "type": "module",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "chatgptx": {
+    "api": "0.2.0",
+    "renderer": "dist/renderer.cjs",
+    "capabilities": [
+      "appearance.color-picker",
+      "appearance.read",
+      "appearance.write",
+      "threads.read",
+      "ui.point.sidebar.thread-row.menu",
+      "ui.point.sidebar.thread-row.priority-indicator",
+      "ui.point.thread.header.menu"
+    ]
+  },
+  "scripts": {
+    "build": "node ../../scripts/build-extension.mjs .",
+    "test": "npm run typecheck && npm run build && node --import tsx --test test/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@chatgptx/api": "file:../../APIs",
+    "@types/node": "24.13.3",
+    "esbuild": "0.25.9",
+    "tsx": "4.20.5",
+    "typescript": "6.0.3"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

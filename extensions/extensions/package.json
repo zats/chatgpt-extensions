@@ -1,0 +1,39 @@
+{
+  "name": "@chatgptx/extension-extensions",
+  "displayName": "Extensions",
+  "id": "extensions",
+  "version": "0.1.0",
+  "description": "Shows selected extensions and controls whether they load at ChatGPT startup.",
+  "private": true,
+  "required": true,
+  "type": "module",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "chatgptx": {
+    "api": "0.2.0",
+    "renderer": "dist/renderer.cjs",
+    "capabilities": [
+      "settings.read",
+      "settings.write",
+      "ui.definition.command",
+      "ui.definition.settings-section"
+    ]
+  },
+  "scripts": {
+    "build": "node ../../scripts/build-extension.mjs .",
+    "test": "npm run typecheck && npm run build && node --import tsx --test test/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@chatgptx/api": "file:../../APIs",
+    "@types/node": "24.13.3",
+    "esbuild": "0.25.9",
+    "tsx": "4.20.5",
+    "typescript": "6.0.3"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

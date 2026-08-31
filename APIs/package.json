@@ -1,0 +1,33 @@
+{
+  "name": "@chatgptx/api",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts"
+    },
+    "./native": {
+      "types": "./native.d.ts"
+    },
+    "./builds/26.825.51511": {
+      "types": "./builds/26.825.51511.d.ts"
+    }
+  },
+  "peerDependencies": {
+    "electron": "42.3.0"
+  },
+  "peerDependenciesMeta": {
+    "electron": {
+      "optional": true
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "devDependencies": {
+    "electron": "42.3.0",
+    "typescript": "6.0.3"
+  }
+}

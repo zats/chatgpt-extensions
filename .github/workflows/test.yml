@@ -1,0 +1,305 @@
+name: Test
+
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        type: string
+        required: true
+      base_sha:
+        type: string
+        required: true
+      version:
+        type: string
+        required: false
+        default: ""
+      app_build:
+        type: string
+        required: false
+        default: ""
+      mode:
+        type: string
+        required: false
+        default: ""
+      download_url:
+        type: string
+        required: false
+        default: ""
+      download_length:
+        type: string
+        required: false
+        default: ""
+      download_ed_signature:
+        type: string
+        required: false
+        default: ""
+      existing:
+        type: boolean
+        required: false
+        default: false
+      require_current:
+        type: boolean
+        required: false
+        default: false
+      live:
+        type: boolean
+        required: false
+        default: false
+      auth_handoff_id:
+        type: string
+        required: false
+        default: ""
+    secrets:
+      CHATGPT_TEST_AUTH_JSON:
+        required: false
+    outputs:
+      auth_artifact_name:
+        description: Exact encrypted test-auth artifact produced by the live job
+        value: ${{ jobs.live.outputs.auth-artifact-name }}
+      auth_source_run_attempt:
+        description: Source attempt authenticated by the encrypted handoff
+        value: ${{ jobs.live.outputs.auth-source-run-attempt }}
+
+permissions:
+  contents: read
+
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Confirm exact checkout
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: test "$(git rev-parse HEAD)" = "$(git rev-parse "$SOURCE_SHA^{commit}")"
+      - name: Validate exact binding change
+        if: inputs.version != ''
+        env:
+          BASE_SHA: ${{ inputs.base_sha }}
+          APP_BUILD: ${{ inputs.app_build }}
+          DOWNLOAD_URL: ${{ inputs.download_url }}
+          DOWNLOAD_LENGTH: ${{ inputs.download_length }}
+          DOWNLOAD_ED_SIGNATURE: ${{ inputs.download_ed_signature }}
+          EXISTING: ${{ inputs.existing }}
+          MODE: ${{ inputs.mode }}
+          REQUIRE_CURRENT: ${{ inputs.require_current }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          if [[ "$EXISTING" == "true" ]]; then
+            node scripts/validate-binding-change.mjs \
+              --repository "$GITHUB_WORKSPACE" \
+              --base "$SOURCE_SHA" \
+              --version "$VERSION" \
+              --mode "$MODE" \
+              --app-build "$APP_BUILD" \
+              --download-url "$DOWNLOAD_URL" \
+              --download-length "$DOWNLOAD_LENGTH" \
+              --download-ed-signature "$DOWNLOAD_ED_SIGNATURE" \
+              --existing true \
+              --require-current "$REQUIRE_CURRENT"
+          else
+            node scripts/validate-binding-change.mjs \
+              --repository "$GITHUB_WORKSPACE" \
+              --base "$BASE_SHA" \
+              --head "$SOURCE_SHA" \
+              --version "$VERSION" \
+              --mode "$MODE" \
+              --app-build "$APP_BUILD" \
+              --download-url "$DOWNLOAD_URL" \
+              --download-length "$DOWNLOAD_LENGTH" \
+              --download-ed-signature "$DOWNLOAD_ED_SIGNATURE"
+          fi
+      - name: Install dependencies
+        run: npm ci
+      - name: Check automation syntax
+        run: |
+          bash -n scripts/download-chatgpt-version.sh
+          bash -n scripts/publish-binding-release.sh
+          node --check scripts/package-binding-release.mjs
+          node --check scripts/promote-current-binding.mjs
+          node --check scripts/resolve-appcast-versions.mjs
+          node --check scripts/run-version-gate.mjs
+          node --check scripts/scan-patch-credentials.mjs
+          node --check scripts/trigger-chatgpt-rebind.mjs
+          node --check scripts/validate-binding-change.mjs
+          bash -n .agents/skills/rebind-chatgpt-version/scripts/extract-app.sh
+          ruby -e 'require "yaml"; Dir[".github/workflows/*.yml"].sort.each { |file| YAML.safe_load(File.read(file), [], [], true) }'
+      - name: Test automation
+        run: node --test scripts/*.test.mjs
+      - name: Test Cloudflare version watcher
+        working-directory: backend/version-watcher
+        run: |
+          npm ci
+          npm test
+          npm run typecheck
+          npx wrangler deploy \
+            --dry-run \
+            --outdir "$RUNNER_TEMP/version-watcher-dry-run"
+      - name: Run repository static gate
+        run: node scripts/run-version-gate.mjs --phase static --result "$RUNNER_TEMP/static-gate.json"
+
+  live:
+    if: inputs.live
+    needs: static
+    runs-on: macos-26
+    environment: chatgpt-test
+    timeout-minutes: 70
+    outputs:
+      auth-artifact-name: ${{ steps.test-auth-handoff.outputs.artifact-name }}
+      auth-source-run-attempt: ${{ steps.test-auth-handoff.outputs.source-run-attempt }}
+    steps:
+      - name: Validate the live gate identity
+        env:
+          AUTH_HANDOFF_ID: ${{ inputs.auth_handoff_id }}
+        run: |
+          [[ "$AUTH_HANDOFF_ID" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] || {
+            echo "Every live gate requires a unique nonempty auth_handoff_id" >&2
+            exit 1
+          }
+      - name: Check out exact source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Build only the trusted live-gate inputs before authentication exists
+        run: |
+          node scripts/build-runtime.mjs
+          for directory in \
+            extensions/extensions \
+            extensions/reactions \
+            extensions/thread-colors \
+            test-fixtures/native-main-probe \
+            test-fixtures/ui-surface-probe \
+            test-fixtures/rich-message-probe; do
+            node scripts/build-extension.mjs "$directory"
+          done
+      - name: Download exact ChatGPT build
+        id: chatgpt
+        env:
+          APP_BUILD: ${{ inputs.app_build }}
+          DOWNLOAD_URL: ${{ inputs.download_url }}
+          DOWNLOAD_LENGTH: ${{ inputs.download_length }}
+          DOWNLOAD_ED_SIGNATURE: ${{ inputs.download_ed_signature }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          app_path="$(scripts/download-chatgpt-version.sh "$VERSION" "$APP_BUILD" "$DOWNLOAD_URL" "$DOWNLOAD_LENGTH" "$DOWNLOAD_ED_SIGNATURE" "$RUNNER_TEMP/chatgpt-app")"
+          echo "app-path=$app_path" >> "$GITHUB_OUTPUT"
+      - name: Materialize private test authentication
+        id: auth
+        env:
+          AUTH_JSON: ${{ secrets.CHATGPT_TEST_AUTH_JSON }}
+        run: |
+          [[ -n "$AUTH_JSON" ]] || {
+            echo "CHATGPT_TEST_AUTH_JSON is required for live validation" >&2
+            exit 1
+          }
+          printf '%s' "$AUTH_JSON" > "$RUNNER_TEMP/initial-test-auth.json"
+          chmod 600 "$RUNNER_TEMP/initial-test-auth.json"
+      - name: Run direct stock ChatGPT gate under a dedicated account
+        env:
+          APP_PATH: ${{ steps.chatgpt.outputs.app-path }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          scripts/run-isolated-live-gate.sh \
+            "$GITHUB_WORKSPACE" \
+            "$APP_PATH" \
+            "$RUNNER_TEMP/initial-test-auth.json" \
+            "runtime/bindings/$VERSION" \
+            "$RUNNER_TEMP/version-gate.json" \
+            "$RUNNER_TEMP/final-test-auth.json" \
+            "$(command -v node)"
+      - name: Scan gate evidence for authentication
+        id: evidence-scan
+        if: always() && steps.auth.outcome == 'success'
+        run: |
+          [[ -f "$RUNNER_TEMP/final-test-auth.json" && \
+             ! -L "$RUNNER_TEMP/final-test-auth.json" ]]
+          [[ ! -f "$RUNNER_TEMP/version-gate.json" ]] || \
+          node scripts/scan-patch-credentials.mjs \
+            --candidate "$RUNNER_TEMP/version-gate.json" \
+            --secret "$RUNNER_TEMP/initial-test-auth.json" \
+            --secret "$RUNNER_TEMP/final-test-auth.json"
+      - name: Upload gate evidence
+        if: always() && steps.evidence-scan.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: version-gate-${{ inputs.auth_handoff_id }}-${{ inputs.version }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/version-gate.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Encrypt refreshed test authentication
+        id: test-auth-handoff
+        if: always() && steps.auth.outcome == 'success' && inputs.auth_handoff_id != ''
+        env:
+          HANDOFF_PUBLIC_KEY: ${{ vars.CHATGPT_TEST_AUTH_HANDOFF_PUBLIC_KEY }}
+        run: |
+          [[ -n "$HANDOFF_PUBLIC_KEY" ]] || {
+            echo "CHATGPT_TEST_AUTH_HANDOFF_PUBLIC_KEY is required" >&2
+            exit 1
+          }
+          candidate_root="$RUNNER_TEMP/auth-candidate-test"
+          encrypted_root="$RUNNER_TEMP/auth-handoff-test"
+          key_file="$RUNNER_TEMP/auth-handoff-public.pem"
+          rm -rf "$candidate_root" "$encrypted_root"
+          install -d -m 700 "$candidate_root" "$encrypted_root"
+          install -m 600 "$RUNNER_TEMP/final-test-auth.json" "$candidate_root/test.json"
+          printf '%s' "$HANDOFF_PUBLIC_KEY" > "$key_file"
+          chmod 600 "$key_file"
+          node scripts/auth-handoff.mjs encrypt \
+            "$key_file" "$candidate_root" "$encrypted_root" \
+            "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" \
+            chatgpt-test CHATGPT_TEST_AUTH_JSON test
+          envelope="$encrypted_root/test.json"
+          [[ -f "$envelope" && ! -L "$envelope" ]] || {
+            echo "Test authentication handoff is not a regular file" >&2
+            exit 1
+          }
+          entries="$(find "$encrypted_root" -mindepth 1 -maxdepth 1 -print)"
+          [[ "$entries" == "$envelope" ]] || {
+            echo "Test authentication handoff has an unexpected entry" >&2
+            exit 1
+          }
+          {
+            echo "available=true"
+            echo "artifact-name=ci-auth-refresh-test-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-${{ inputs.auth_handoff_id }}"
+            echo "source-run-attempt=$GITHUB_RUN_ATTEMPT"
+          } >> "$GITHUB_OUTPUT"
+      - name: Upload encrypted test authentication handoff
+        if: always() && steps.test-auth-handoff.outputs.available == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ steps.test-auth-handoff.outputs.artifact-name }}
+          path: ${{ runner.temp }}/auth-handoff-test/test.json
+          if-no-files-found: error
+          retention-days: 1
+      - name: Remove app and authentication
+        if: always()
+        run: >-
+          rm -rf
+          "$RUNNER_TEMP/chatgpt-app"
+          "$RUNNER_TEMP/initial-test-auth.json"
+          "$RUNNER_TEMP/final-test-auth.json"
+          "$RUNNER_TEMP/version-gate.json"
+          "$RUNNER_TEMP/auth-candidate-test"
+          "$RUNNER_TEMP/auth-handoff-test"
+          "$RUNNER_TEMP/auth-handoff-public.pem"

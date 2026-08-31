@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 2,
+  "current": "26.825.51511",
+  "bindings": {
+    "26.825.51511": {
+      "version": "26.825.51511",
+      "appBuild": "7377",
+      "appAsarSha256": "f56ac8d5254a10fc4a04e7417fa787d135c3bbca49bad7d668d4ae65833d40c7",
+      "downloadUrl": "https://persistent.oaistatic.com/codex-app-prod/ChatGPT-darwin-arm64-26.825.51511.zip",
+      "downloadLength": 595263123,
+      "downloadEdSignature": "9ig6An9v69dIpSgoSRGs6PoTr4sP4Dug9HcyWm4vMEB7W4owrEQT5cN+csTux1MdN70stJXuq1U6KRxzqBw9CQ=="
+    }
+  }
+}

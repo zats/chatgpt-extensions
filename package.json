@@ -1,0 +1,39 @@
+{
+  "name": "chatgpt-extensions",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Exact-build extension APIs, runtime bindings, and extensions for ChatGPT on macOS.",
+  "repository": "https://github.com/zats/chatgpt-extensions",
+  "type": "module",
+  "workspaces": [
+    "APIs",
+    "extensions/*"
+  ],
+  "scripts": {
+    "build": "npm run build:runtime && npm run build:extensions",
+    "build:runtime": "node scripts/build-runtime.mjs",
+    "build:extensions": "node scripts/build-all.mjs",
+    "build:extension": "node scripts/build-extension.mjs",
+    "start": "npm run build && node scripts/start.mjs start",
+    "gate:version": "node scripts/start.mjs run-gate",
+    "typecheck": "tsc -p tsconfig.json && npm run typecheck --workspace=@chatgptx/api",
+    "test": "node --import tsx --test \"runtime/**/*.test.ts\" \"runtime/**/*.test.mjs\" \"scripts/**/*.test.mjs\" \"extensions/**/*.test.ts\"",
+    "test:rich-content-runtime": "node --import tsx --test runtime/bindings/26.825.51511/rich-content-binding-verifier.test.mjs runtime/bindings/26.825.51511/host-source-patch.test.mjs runtime/bindings/26.825.51511/renderer-adapter.test.ts",
+    "verify:rich-content-binding": "node scripts/verify-rich-content-binding.mjs"
+  },
+  "devDependencies": {
+    "@electron/asar": "4.2.1",
+    "@types/node": "24.13.3",
+    "esbuild": "0.25.9",
+    "tsx": "4.20.5",
+    "typescript": "6.0.3"
+  },
+  "overrides": {
+    "electron@42.3.0": {
+      "extract-zip": "npm:@electron-internal/extract-zip@1.0.1"
+    }
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

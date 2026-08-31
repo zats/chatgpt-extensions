@@ -1,0 +1,90 @@
+name: Refresh one CI authentication document
+
+on:
+  workflow_call:
+    inputs:
+      artifact_name:
+        type: string
+        required: true
+      artifact_run_id:
+        type: string
+        required: true
+      role:
+        type: string
+        required: true
+      source_run_id:
+        type: string
+        required: true
+      source_run_attempt:
+        type: string
+        required: true
+      target_environment:
+        type: string
+        required: true
+      target_secret:
+        type: string
+        required: true
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  refresh:
+    concurrency:
+      group: auth-refresh-${{ inputs.target_environment }}-${{ inputs.target_secret }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: ${{ inputs.target_environment }}-refresh
+    steps:
+      - name: Check out trusted automation
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - name: Download exact encrypted handoff
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          run-id: ${{ inputs.artifact_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/encrypted-handoff
+      - name: Decrypt, compare, and update only a newer authentication document
+        env:
+          CURRENT_AUTH_JSON: ${{ secrets.CURRENT_AUTH_JSON }}
+          GH_TOKEN: ${{ secrets.SECRET_UPDATE_TOKEN }}
+          HANDOFF_PRIVATE_KEY: ${{ secrets.AUTH_HANDOFF_PRIVATE_KEY }}
+          ROLE: ${{ inputs.role }}
+          RUN_ATTEMPT: ${{ inputs.source_run_attempt }}
+          RUN_ID: ${{ inputs.source_run_id }}
+          TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
+          TARGET_SECRET: ${{ inputs.target_secret }}
+        run: |
+          [[ -n "$CURRENT_AUTH_JSON" && -n "$GH_TOKEN" && -n "$HANDOFF_PRIVATE_KEY" ]]
+          private_key="$RUNNER_TEMP/handoff-private.pem"
+          current_auth="$RUNNER_TEMP/current-auth.json"
+          printf '%s' "$HANDOFF_PRIVATE_KEY" > "$private_key"
+          printf '%s' "$CURRENT_AUTH_JSON" > "$current_auth"
+          chmod 600 "$private_key" "$current_auth"
+          scripts/refresh-auth-handoff.sh \
+            "$RUNNER_TEMP/encrypted-handoff" \
+            "$private_key" \
+            "$current_auth" \
+            "$ROLE" \
+            "$GITHUB_REPOSITORY" \
+            "$RUN_ID" \
+            "$RUN_ATTEMPT" \
+            "$TARGET_ENVIRONMENT" \
+            "$TARGET_SECRET"
+      - name: Remove decrypted authentication material
+        if: always()
+        run: >-
+          rm -rf
+          "$RUNNER_TEMP/encrypted-handoff"
+          "$RUNNER_TEMP/handoff-private.pem"
+          "$RUNNER_TEMP/current-auth.json"

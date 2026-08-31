@@ -1,0 +1,4 @@
+interface:
+  display_name: "Rebind ChatGPT Version"
+  short_description: "Create or correct one exact v5 ChatGPT binding"
+  default_prompt: "Use $rebind-chatgpt-version with the supplied exact stock ChatGPT app and extracted app.asar tree. Keep the stable API, product extensions, launcher, and automation unchanged."

@@ -1,0 +1,23 @@
+name = "chatgpt-extensions-version-watcher"
+main = "src/index.ts"
+compatibility_date = "2026-08-31"
+account_id = "5088ca1ac9e6a7e9282df4c2209d1da6"
+
+[vars]
+GITHUB_OWNER = "zats"
+GITHUB_REPO = "chatgpt-extensions"
+GITHUB_BRANCH = "main"
+GITHUB_ISSUE_AUTHOR = "zats"
+
+[[d1_databases]]
+binding = "VERSION_CLAIMS"
+database_name = "chatgpt-extensions-version-watcher"
+database_id = "ad959a7b-6726-4b97-b6ae-5ad30eb049ae"
+migrations_dir = "migrations"
+
+[triggers]
+crons = ["*/5 * * * *"]
+
+[observability.logs]
+enabled = true
+invocation_logs = true
