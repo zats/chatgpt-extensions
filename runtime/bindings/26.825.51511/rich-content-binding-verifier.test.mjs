@@ -20,6 +20,30 @@ test("pins five unique exact-build assets with complete SHA-256 values", () => {
   }
 });
 
+test("pins the three first-party primary AppShell markers", () => {
+  const appInitial = RICH_CONTENT_BINDING.assets.find(
+    (asset) => asset.id === "app-rich-content-owners",
+  );
+  assert.ok(appInitial);
+  assert.deepEqual(
+    appInitial.anchors.slice(-3),
+    [
+      {
+        label: "default AppShell main surface",
+        needle: '"data-app-shell-main-surface":`default`',
+      },
+      {
+        label: "AppShell header marker",
+        needle: "N=`app-shell-header`",
+      },
+      {
+        label: "AppShell main focus-area marker",
+        needle: '"data-app-shell-focus-area":`main`',
+      },
+    ],
+  );
+});
+
 test("accepts one match for each semantic anchor", () => {
   validateUniqueAnchors(
     "fixture.js",

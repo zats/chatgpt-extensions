@@ -78,6 +78,25 @@ const exactUiBridgeSource = String.raw`  const exactUiTransformers = Object.free
   let runExactProductExtensionProbe = null;
   let runExactProductExtensionRealUiProbe = null;
 
+  function primaryAppShellReady() {
+    const root = document.querySelector(
+      'main[data-app-shell-main-surface="default"]',
+    );
+    if (!(root instanceof HTMLElement) || !root.isConnected) return false;
+    const header = root.querySelector(
+      'header[data-pip-obstacle="app-shell-header"]',
+    );
+    const mainFocusArea = root.querySelector(
+      '[data-app-shell-focus-area="main"]',
+    );
+    return (
+      header instanceof HTMLElement &&
+      mainFocusArea instanceof HTMLElement &&
+      root.contains(header) &&
+      root.contains(mainFocusArea)
+    );
+  }
+
   function subscribeExactUi(listener) {
     exactUiListeners.add(listener);
     return () => exactUiListeners.delete(listener);
@@ -5305,6 +5324,7 @@ const patches = Object.freeze([
     ),
     after: lines(
       "      captureDynamicThreadItemsFromOpenMenus,",
+      "      primaryAppShellReady,",
       "      richContentOwnerHits: () => Object.freeze({ ...exactRichOwnerHits }),",
       "      richContentLifecycle: () => Object.freeze({",
       "        mounts: Object.freeze({ ...exactRichLifecycle.mounts }),",

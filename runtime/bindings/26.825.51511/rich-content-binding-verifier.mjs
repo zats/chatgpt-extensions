@@ -115,6 +115,18 @@ export const RICH_CONTENT_BINDING = Object.freeze({
           label: "fenced-code owner export",
           needle: "Kss as Iw",
         }),
+        Object.freeze({
+          label: "default AppShell main surface",
+          needle: '"data-app-shell-main-surface":`default`',
+        }),
+        Object.freeze({
+          label: "AppShell header marker",
+          needle: "N=`app-shell-header`",
+        }),
+        Object.freeze({
+          label: "AppShell main focus-area marker",
+          needle: '"data-app-shell-focus-area":`main`',
+        }),
       ]),
     }),
     Object.freeze({

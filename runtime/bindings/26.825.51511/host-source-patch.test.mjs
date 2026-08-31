@@ -758,6 +758,7 @@ test("exact first-party UI owners expose extension transforms and controls", () 
     "new MutationObserver(removeEmptyContainer)",
     "observer.observe(container, { childList: true })",
     "ui: makeExactUiApi(extId)",
+    "primaryAppShellReady",
   ]) {
     assert.ok(result.source.includes(marker), `missing exact UI marker: ${marker}`);
   }
@@ -789,6 +790,96 @@ test("exact first-party UI owners expose extension transforms and controls", () 
     result.source.indexOf("const headerDiagnostics = Object.freeze") <
       result.source.indexOf("const settingsOpened = await openSettingsPane"),
     "the header must be measured before Settings replaces the thread view",
+  );
+});
+
+test("primary AppShell readiness pins the exact first-party structure", () => {
+  const result = patch();
+  const start = result.source.indexOf("  function primaryAppShellReady() {");
+  const end = result.source.indexOf("\n\n  function subscribeExactUi", start);
+  assert.ok(start >= 0, "the primary AppShell readiness function must exist");
+  assert.ok(end > start, "the primary AppShell readiness function must be bounded");
+  const functionSource = result.source.slice(start, end);
+  const evaluate = (document, HTMLElement) =>
+    new Function(
+      "document",
+      "HTMLElement",
+      `${functionSource}\nreturn primaryAppShellReady();`,
+    )(document, HTMLElement);
+
+  class FakeHTMLElement {
+    constructor({ connected = true, children = [] } = {}) {
+      this.isConnected = connected;
+      this.children = children;
+      this.queries = [];
+    }
+
+    contains(candidate) {
+      return this.children.includes(candidate);
+    }
+
+    querySelector(selector) {
+      this.queries.push(selector);
+      if (selector === 'header[data-pip-obstacle="app-shell-header"]') {
+        return this.children.find((child) => child.kind === "header") ?? null;
+      }
+      if (selector === '[data-app-shell-focus-area="main"]') {
+        return this.children.find((child) => child.kind === "main-focus") ?? null;
+      }
+      return null;
+    }
+  }
+
+  const rootSelector = 'main[data-app-shell-main-surface="default"]';
+  const documentFor = (root, queried = []) => ({
+    querySelector(selector) {
+      queried.push(selector);
+      return selector === rootSelector ? root : null;
+    },
+  });
+  const header = Object.assign(new FakeHTMLElement(), { kind: "header" });
+  const mainFocus = Object.assign(new FakeHTMLElement(), { kind: "main-focus" });
+
+  assert.equal(evaluate(documentFor(null), FakeHTMLElement), false);
+  assert.equal(evaluate(documentFor({ isConnected: true }), FakeHTMLElement), false);
+  assert.equal(
+    evaluate(documentFor(new FakeHTMLElement({ connected: false })), FakeHTMLElement),
+    false,
+  );
+  assert.equal(
+    evaluate(
+      documentFor(new FakeHTMLElement({ children: [header] })),
+      FakeHTMLElement,
+    ),
+    false,
+  );
+  assert.equal(
+    evaluate(
+      documentFor(new FakeHTMLElement({ children: [mainFocus] })),
+      FakeHTMLElement,
+    ),
+    false,
+  );
+  const detachedRoot = new FakeHTMLElement({ children: [mainFocus] });
+  detachedRoot.querySelector = (selector) =>
+    selector === 'header[data-pip-obstacle="app-shell-header"]'
+      ? header
+      : selector === '[data-app-shell-focus-area="main"]'
+        ? mainFocus
+        : null;
+  assert.equal(evaluate(documentFor(detachedRoot), FakeHTMLElement), false);
+
+  const queried = [];
+  const root = new FakeHTMLElement({ children: [header, mainFocus] });
+  assert.equal(evaluate(documentFor(root, queried), FakeHTMLElement), true);
+  assert.deepEqual(queried, [rootSelector]);
+  assert.deepEqual(root.queries, [
+    'header[data-pip-obstacle="app-shell-header"]',
+    '[data-app-shell-focus-area="main"]',
+  ]);
+  assert.match(
+    result.source,
+    /captureDynamicThreadItemsFromOpenMenus,\n\s+primaryAppShellReady,\n\s+richContentOwnerHits:/,
   );
 });
 

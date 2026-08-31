@@ -25,12 +25,14 @@ its digest is equal to the digest in `manifest.json`. The build fails if the
 checked-in bundle is stale. The binding registry also verifies each artifact
 digest before bootstrap loads executable code.
 
-`rich-content-binding-verifier.mjs` pins five exact renderer assets and 38
+`rich-content-binding-verifier.mjs` pins five exact renderer assets and 41
 unique semantic anchors. The anchors include each extension attachment owner,
 the first-party fallback renderers for `title_citation`, local
 `assistant-message`, and cloud `assistant-message` values, and the exact
-home-task suggestion producer. The home asset pins its query, owner props,
-native list surface, dismiss action, export, and null-producer gate. The live
+home-task suggestion producer. They also pin the default AppShell main surface,
+its app-shell header marker, and its main focus-area marker. The home asset pins
+its query, owner props, native list surface, dismiss action, export, and
+null-producer gate. The live
 gate must also prove the first-party `text` code-block renderer, an unregistered
 directive name, a failed directive renderer, and false, thrown, and
 renderer-failure outcomes for every matcher-capable definition kind.
