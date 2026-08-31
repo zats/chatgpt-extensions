@@ -26,8 +26,8 @@ jq -e '
   (.downloadUrl | test("^https://persistent\\.oaistatic\\.com/codex-app-prod/ChatGPT-darwin-arm64-[0-9.]+\\.zip$")) and
   (.downloadLength | type == "number" and . > 0) and
   (.downloadEdSignature | type == "string" and length > 0) and
-  (.tag | type == "string") and
-  (.title | type == "string") and
+  (.tag == ("binding-" + .version + "-v" + .adapterVersion)) and
+  (.title == ("ChatGPT " + .version + " binding v" + .adapterVersion)) and
   (.archive | type == "string") and
   (.checksum | type == "string") and
   (.sha256 | test("^[a-f0-9]{64}$"))
@@ -36,6 +36,7 @@ jq -e '
 SOURCE_SHA="$(jq -er .sourceSha "$PLAN_PATH")"
 TAG="$(jq -er .tag "$PLAN_PATH")"
 TITLE="$(jq -er .title "$PLAN_PATH")"
+NOTES="Immutable exact-build binding generated and validated from $SOURCE_SHA."
 ARCHIVE="$(jq -er .archive "$PLAN_PATH")"
 CHECKSUM="$(jq -er .checksum "$PLAN_PATH")"
 EXPECTED_SHA="$(jq -er .sha256 "$PLAN_PATH")"
@@ -64,15 +65,23 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 release_json="$TEMP_ROOT/release.json"
+release_error="$TEMP_ROOT/release.error"
+release_pages="$TEMP_ROOT/release-pages.json"
+release_list_error="$TEMP_ROOT/release-list.error"
+release_create_error="$TEMP_ROOT/release-create.error"
 tag_json="$TEMP_ROOT/tag.json"
 tag_error="$TEMP_ROOT/tag.error"
+tag_create_json="$TEMP_ROOT/tag-create.json"
+tag_create_error="$TEMP_ROOT/tag-create.error"
 
 tag_state() {
   if gh api "repos/$REPOSITORY/git/ref/tags/$TAG" > "$tag_json" 2> "$tag_error"; then
     local tag_sha
+    local tag_type
     tag_sha="$(jq -er .object.sha "$tag_json")"
-    [[ "$tag_sha" == "$SOURCE_SHA" ]] || {
-      echo "release tag $TAG points to $tag_sha, expected $SOURCE_SHA" >&2
+    tag_type="$(jq -er .object.type "$tag_json")"
+    [[ "$tag_type" == "commit" && "$tag_sha" == "$SOURCE_SHA" ]] || {
+      echo "release tag $TAG points to $tag_type $tag_sha, expected commit $SOURCE_SHA" >&2
       exit 1
     }
     return 0
@@ -85,6 +94,38 @@ tag_state() {
   exit 1
 }
 
+release_state() {
+  if gh api "repos/$REPOSITORY/releases/tags/$TAG" > "$release_json" 2> "$release_error"; then
+    return 0
+  fi
+  if ! grep -Eq 'Not Found|HTTP 404' "$release_error"; then
+    cat "$release_error" >&2
+    echo "could not resolve release $TAG" >&2
+    exit 1
+  fi
+
+  # GitHub excludes drafts from the release-by-tag REST endpoint. Search all
+  # authenticated release pages and accept exactly one matching draft.
+  if ! gh api \
+    --paginate \
+    --slurp \
+    "repos/$REPOSITORY/releases?per_page=100" > "$release_pages" 2> "$release_list_error"; then
+    cat "$release_list_error" >&2
+    echo "could not search draft releases for $TAG" >&2
+    exit 1
+  fi
+  local release_count
+  release_count="$(jq -er --arg tag "$TAG" '[.[][] | select(.tag_name == $tag)] | length' "$release_pages")"
+  if [[ "$release_count" == "0" ]]; then
+    return 1
+  fi
+  [[ "$release_count" == "1" ]] || {
+    echo "more than one release has exact tag $TAG" >&2
+    exit 1
+  }
+  jq -e --arg tag "$TAG" '[.[][] | select(.tag_name == $tag)][0]' "$release_pages" > "$release_json"
+}
+
 require_exact_tag() {
   tag_state || {
     echo "release tag $TAG does not exist at expected source $SOURCE_SHA" >&2
@@ -92,44 +133,92 @@ require_exact_tag() {
   }
 }
 
-# A hostile or stale pre-existing tag must fail before a draft or asset can be created.
-tag_state || true
-existing_published=false
-if gh api "repos/$REPOSITORY/releases/tags/$TAG" > "$release_json" 2>/dev/null; then
-  target="$(jq -er .target_commitish "$release_json")"
-  [[ "$target" == "$SOURCE_SHA" ]] || {
-    echo "existing release $TAG targets $target, expected $SOURCE_SHA" >&2
-    exit 1
-  }
-  if [[ "$(jq -r .draft "$release_json")" == "false" ]]; then
-    existing_published=true
-  fi
-else
-  gh release create "$TAG" \
-    --repo "$REPOSITORY" \
-    --target "$SOURCE_SHA" \
-    --title "$TITLE" \
-    --notes "Immutable exact-build binding generated and validated from $SOURCE_SHA." \
-    --draft
-  gh api "repos/$REPOSITORY/releases/tags/$TAG" > "$release_json"
-fi
-
-require_exact_tag
-
-release_id="$(jq -er .id "$release_json")"
-archive_name="$(basename "$ARCHIVE")"
-checksum_name="$(basename "$CHECKSUM")"
-
 require_release_identity() {
   jq -e \
     --arg tag "$TAG" \
     --arg source "$SOURCE_SHA" \
-    '.tag_name == $tag and .target_commitish == $source and .prerelease == false' \
+    --arg title "$TITLE" \
+    --arg notes "$NOTES" \
+    '.tag_name == $tag and
+     .target_commitish == $source and
+     .name == $title and
+     .body == $notes and
+     .prerelease == false and
+     (.draft | type) == "boolean" and
+     (.assets | type) == "array"' \
     "$release_json" >/dev/null || {
     echo "release metadata for $TAG is not exact" >&2
     exit 1
   }
 }
+
+ensure_exact_tag() {
+  if tag_state; then
+    return 0
+  fi
+  if gh api \
+    --method POST \
+    "repos/$REPOSITORY/git/refs" \
+    -f "ref=refs/tags/$TAG" \
+    -f "sha=$SOURCE_SHA" > "$tag_create_json" 2> "$tag_create_error"; then
+    require_exact_tag
+    return 0
+  fi
+
+  # A concurrent publisher can create the same exact tag between the read and POST.
+  # Re-read it after every failed create. A different target still fails in tag_state.
+  if tag_state; then
+    return 0
+  fi
+  cat "$tag_create_error" >&2
+  echo "could not create exact release tag $TAG at $SOURCE_SHA" >&2
+  exit 1
+}
+
+# Reject hostile pre-existing state before this process creates any state.
+tag_state || true
+release_exists=false
+if release_state; then
+  release_exists=true
+  require_release_identity
+fi
+
+# GitHub draft releases do not necessarily create a Git ref. Create and verify the
+# lightweight tag explicitly before a draft or any release asset is created.
+ensure_exact_tag
+
+if [[ "$release_exists" == "false" ]]; then
+  if ! gh release create "$TAG" \
+    --repo "$REPOSITORY" \
+    --target "$SOURCE_SHA" \
+    --title "$TITLE" \
+    --notes "$NOTES" \
+    --draft 2> "$release_create_error"; then
+    # A concurrent publisher can create the exact draft between the read and create.
+    if ! release_state; then
+      cat "$release_create_error" >&2
+      echo "could not create exact draft release $TAG" >&2
+      exit 1
+    fi
+  else
+    release_state || {
+      echo "created draft release $TAG could not be resolved" >&2
+      exit 1
+    }
+  fi
+  require_release_identity
+fi
+
+require_exact_tag
+
+existing_published=false
+if [[ "$(jq -r .draft "$release_json")" == "false" ]]; then
+  existing_published=true
+fi
+
+release_id="$(jq -er .id "$release_json")"
+archive_name="$(basename "$ARCHIVE")"
+checksum_name="$(basename "$CHECKSUM")"
 
 require_no_unexpected_assets() {
   jq -e \
