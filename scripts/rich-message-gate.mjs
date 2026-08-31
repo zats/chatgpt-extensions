@@ -93,6 +93,12 @@ export function assertRichProbeLifecycle(events, unmounted) {
     const actualNames = surfaceEvents.map((event) => event.name);
     let cursor = 0;
     const firstMount = actualNames[cursor++] === `${surface}.mount`;
+    while (
+      actualNames[cursor] === `${surface}.dispose` &&
+      actualNames[cursor + 1] === `${surface}.mount`
+    ) {
+      cursor += 2;
+    }
     const invalidated = actualNames[cursor++] === `${surface}.invalidate`;
     const remaining = actualNames.slice(cursor);
     const finallyDisposed =

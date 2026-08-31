@@ -237,6 +237,22 @@ test("the live probe requires replacement and final disposal for each owner", ()
     },
   );
   assert.doesNotThrow(() => assertRichProbeLifecycle(replayed, false));
+  const preInvalidationReplay = structuredClone(interacted);
+  const codeInvalidation = preInvalidationReplay.findIndex(
+    (event) => event.name === "code-block.invalidate",
+  );
+  preInvalidationReplay.splice(
+    codeInvalidation,
+    0,
+    { name: "code-block.dispose" },
+    {
+      name: "code-block.mount",
+      context: { ownerId: "code-block:owner" },
+    },
+  );
+  assert.doesNotThrow(() =>
+    assertRichProbeLifecycle(preInvalidationReplay, false),
+  );
   const postActivationReplay = structuredClone(interacted);
   const postActivationIndex = postActivationReplay.findIndex(
     (event) => event.name === "code-block.activate",
