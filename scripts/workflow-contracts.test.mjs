@@ -176,6 +176,15 @@ test("generation uploads only encrypted bytes before separate trusted sanitizati
     value,
     /PATH="\$CODEX_BIN:\$NODE_BIN:\/usr\/bin:\/bin:\/usr\/sbin:\/sbin"/,
   );
+  const retrySeedApply = value.slice(
+    value.indexOf('if [[ -n "$seed_patch" ]]'),
+    value.indexOf("name: Generate an uncommitted exact binding"),
+  );
+  assert.match(
+    retrySeedApply,
+    /\/bin\/cat "\$seed_patch" \|[\s\S]*git -C "\$UNTRUSTED_WORKTREE" apply -/,
+  );
+  assert.doesNotMatch(retrySeedApply, /apply "\$seed_patch"/);
   const captureTermination = value.slice(
     value.indexOf("id: terminate-capture"),
     value.indexOf("name: Encrypt the raw patch for the trusted sanitizer"),

@@ -812,10 +812,11 @@ jobs:
           fi
 
           if [[ -n "$seed_patch" ]]; then
-            sudo -u "$AGENT_USER" /usr/bin/env -i \
-              HOME="$UNTRUSTED_HOME" \
-              PATH=/usr/bin:/bin:/usr/sbin:/sbin \
-              /usr/bin/git -C "$UNTRUSTED_WORKTREE" apply "$seed_patch"
+            /bin/cat "$seed_patch" | \
+              sudo -u "$AGENT_USER" /usr/bin/env -i \
+                HOME="$UNTRUSTED_HOME" \
+                PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+                /usr/bin/git -C "$UNTRUSTED_WORKTREE" apply -
             echo "source=$seed_source" >> "$GITHUB_OUTPUT"
           fi
       - name: Generate an uncommitted exact binding
