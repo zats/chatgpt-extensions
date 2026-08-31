@@ -376,6 +376,14 @@ test("test authentication exists only after no-secret static tests and live runs
   assert.match(helper, /pkill -KILL -u "\$gate_uid"/);
   assert.match(helper, /pgrep -u "\$gate_uid"/);
   assert.match(helper, /chown -R root:wheel "\$gate_home\/workspace"/);
+  assert.match(
+    helper,
+    /chmod -R a\+rX "\$gate_home\/workspace" "\$gate_home\/ChatGPT\.app"/,
+  );
+  assert.match(
+    helper,
+    /chmod -R go-w "\$gate_home\/workspace" "\$gate_home\/ChatGPT\.app"/,
+  );
   const readable = helper.indexOf('chmod -R a+rX "$gate_home/workspace"');
   const immutable = helper.indexOf('chmod -R go-w "$gate_home/workspace"');
   const launch = helper.indexOf('"$source_root/scripts/run-owned-command.mjs"');
