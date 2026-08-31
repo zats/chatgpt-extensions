@@ -50,6 +50,15 @@ test("all external actions use immutable commit SHAs", async () => {
   }
 });
 
+test("workflow YAML parsing uses the current Psych keyword API", async () => {
+  const value = await source("test.yml");
+  assert.match(
+    value,
+    /YAML\.safe_load\(File\.read\(file\), permitted_classes: \[\], permitted_symbols: \[\], aliases: true\)/,
+  );
+  assert.doesNotMatch(value, /YAML\.safe_load\(File\.read\(file\), \[\], \[\], true\)/);
+});
+
 test("first binding commit follows sanitized static and isolated live gates", async () => {
   const value = await source("rebind-chatgpt.yml");
   const cleanPatch = value.indexOf(

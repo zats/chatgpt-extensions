@@ -135,7 +135,7 @@ jobs:
           node --check scripts/trigger-chatgpt-rebind.mjs
           node --check scripts/validate-binding-change.mjs
           bash -n .agents/skills/rebind-chatgpt-version/scripts/extract-app.sh
-          ruby -e 'require "yaml"; Dir[".github/workflows/*.yml"].sort.each { |file| YAML.safe_load(File.read(file), [], [], true) }'
+          ruby -e 'require "yaml"; Dir[".github/workflows/*.yml"].sort.each { |file| YAML.safe_load(File.read(file), permitted_classes: [], permitted_symbols: [], aliases: true) }'
       - name: Test automation
         run: node --test scripts/*.test.mjs
       - name: Test Cloudflare version watcher
