@@ -737,6 +737,13 @@ test("exact first-party UI owners expose extension transforms and controls", () 
     'scope: ownerKind === "cloud" ? "cloud" : "execution"',
     "multiple cloud conversation-item owners matched the exact binding",
     "runProductExtensionProbe",
+    "interactiveThreadTarget",
+    "activateThreadRow",
+    "selectionDeadline",
+    "Activity row was replaced before activation",
+    "currentThreadMatched",
+    "visibleResponseCount",
+    "matchingResponseFound",
     "Thread Colors did not contribute its Color > Blue action",
     "data-cgptx-product-reaction-owner",
     "data-cgptx-product-reaction-persisted",
@@ -746,10 +753,30 @@ test("exact first-party UI owners expose extension transforms and controls", () 
     "exactRichLifecycle.mounts[kind] += 1",
     "exactRichLifecycle.disposals[kind] += 1",
     "mountRichContentProbe",
+    "removeEmptyContainer",
+    "container.hasChildNodes()",
+    "new MutationObserver(removeEmptyContainer)",
+    "observer.observe(container, { childList: true })",
     "ui: makeExactUiApi(extId)",
   ]) {
     assert.ok(result.source.includes(marker), `missing exact UI marker: ${marker}`);
   }
+  assert.equal(
+    result.source.includes("container.remove();") &&
+      result.source.includes("if (!container.hasChildNodes())"),
+    true,
+    "the probe must remove its container only after React empties the portal",
+  );
+  assert.equal(
+    result.source.includes("remainingChecks"),
+    false,
+    "the probe must not physically remove a non-empty React portal",
+  );
+  assert.ok(
+    result.source.indexOf('throw new Error("Activity row was replaced before activation")') <
+      result.source.indexOf("target = activateThreadRow(candidate)"),
+    "the activity driver must check the native row before its click can remount it",
+  );
   assert.ok(result.source.includes('"builtin:pull-requests": "app.pull-requests"'));
   assert.ok(result.source.includes('"builtin:automations": "app.automations"'));
   assert.ok(result.source.includes("menuItems.map((item) => exactUiMenuItem"));

@@ -1843,7 +1843,20 @@ const exactUiHookSource = String.raw`    const exactAssistantMarkdownContext =
       emitExactUiChange();
       const container = exactRichProbeContainer;
       exactRichProbeContainer = null;
-      queueMicrotask(() => container?.remove?.());
+      let observer;
+      const removeEmptyContainer = () => {
+        if (!container?.isConnected) {
+          observer?.disconnect();
+          return;
+        }
+        if (!container.hasChildNodes()) {
+          observer?.disconnect();
+          container.remove();
+        }
+      };
+      observer = new MutationObserver(removeEmptyContainer);
+      observer.observe(container, { childList: true });
+      removeEmptyContainer();
       return true;
     };
 
@@ -2098,19 +2111,17 @@ const exactUiHookSource = String.raw`    const exactAssistantMarkdownContext =
           if (value) return value;
           await wait();
         }
-        const visibleButtonLabels = Array.from(
+        const visibleButtonCount = Array.from(
           document.querySelectorAll(
             'button[aria-label], [role="button"][aria-label]',
           ),
         )
-          .filter((element) => isVisible(element))
-          .map((element) => element.getAttribute("aria-label"))
-          .filter(Boolean);
+          .filter((element) => isVisible(element)).length;
         throw new Error(
           "Timed out waiting for " +
             label +
-            "; visible button labels: " +
-            JSON.stringify(visibleButtonLabels),
+            "; visible button count: " +
+            visibleButtonCount,
         );
       };
       const isVisible = (element) => {
@@ -2334,7 +2345,7 @@ const exactUiHookSource = String.raw`    const exactAssistantMarkdownContext =
             Math.abs(titleRect.left - uncoloredTitleRect.left) <= 0.5,
         });
       };
-      const responseTarget = () =>
+      const responseTargets = () =>
         Array.from(
           document.querySelectorAll(
             "[data-response-annotation-target]" +
@@ -2345,8 +2356,25 @@ const exactUiHookSource = String.raw`    const exactAssistantMarkdownContext =
             (element) =>
               isVisible(element) &&
               (element.textContent?.trim().length ?? 0) > 0,
+          );
+      const responseTarget = (conversationId) =>
+        responseTargets()
+          .filter(
+            (element) =>
+              element.getAttribute("data-response-annotation-conversation") ===
+              conversationId,
           )
           .at(-1) ?? null;
+      const interactiveThreadTarget = (row) =>
+        row?.closest?.('button, [role="menuitem"], a, [role="button"]') ??
+        row;
+      const activateThreadRow = (row) => {
+        const target = interactiveThreadTarget(row);
+        if (!(target instanceof HTMLElement)) return null;
+        target.focus?.();
+        target.click();
+        return target;
+      };
 
       const initialActivityControl = await waitUntil(
         () => {
@@ -2387,24 +2415,60 @@ const exactUiHookSource = String.raw`    const exactAssistantMarkdownContext =
         "two deterministic native activity thread rows",
       );
 
+      const activityCandidates = activityRows
+        .map((row) => ({
+          identity: threadListContextFromRow(row),
+          initiallySelected:
+            row.getAttribute("data-app-action-sidebar-thread-selected") ===
+            "true",
+        }))
+        .filter((candidate) => candidate.identity !== null)
+        .sort(
+          (left, right) =>
+            Number(left.initiallySelected) - Number(right.initiallySelected),
+        );
+      const selectionDeadline = Date.now() + 45_000;
       let selectedRow = null;
       let selectedIdentity = null;
-      for (const candidate of activityRows) {
-        const candidateIdentity = threadListContextFromRow(candidate);
-        if (!candidateIdentity) continue;
-        candidate.click();
+      const selectionAttempts = [];
+      for (let index = 0; index < activityCandidates.length; index += 1) {
+        const candidateIdentity = activityCandidates[index].identity;
+        const candidate = rowForIdentity(candidateIdentity);
+        const attemptsLeft = activityCandidates.length - index;
+        const attemptTimeout = Math.max(
+          1,
+          Math.floor((selectionDeadline - Date.now()) / attemptsLeft),
+        );
+        const routeBefore = location.href;
+        let target = null;
         try {
+          if (!(candidate instanceof HTMLElement) || !candidate.isConnected) {
+            throw new Error("Activity row was replaced before activation");
+          }
+          target = activateThreadRow(candidate);
           await waitUntil(
             () => {
               const model = threadModelForId(candidateIdentity.threadId);
               return (
                 model &&
                 sameThreadIdentity(model.context, candidateIdentity) &&
-                responseTarget()
+                currentThread &&
+                sameThreadIdentity(currentThread, candidateIdentity) &&
+                responseTarget(candidateIdentity.threadId)
               );
             },
             "a native thread with assistant response content",
-            12_000,
+            attemptTimeout,
+          );
+          selectionAttempts.push(
+            Object.freeze({
+              attempt: selectionAttempts.length + 1,
+              status: "passed",
+              rowTag: candidate?.tagName ?? null,
+              targetTag: target?.tagName ?? null,
+              targetRole: target?.getAttribute?.("role") ?? null,
+              routeChanged: location.href !== routeBefore,
+            }),
           );
           selectedRow = rowForIdentity(candidateIdentity);
           selectedIdentity = Object.freeze({
@@ -2413,13 +2477,35 @@ const exactUiHookSource = String.raw`    const exactAssistantMarkdownContext =
             threadId: candidateIdentity.threadId,
           });
           break;
-        } catch {
-          // Try the other deterministic row.
+        } catch (error) {
+          selectionAttempts.push(
+            Object.freeze({
+              attempt: selectionAttempts.length + 1,
+              status: "failed",
+              errorName:
+                typeof error?.name === "string" ? error.name : "Error",
+              rowTag: candidate?.tagName ?? null,
+              targetTag: target?.tagName ?? null,
+              targetRole: target?.getAttribute?.("role") ?? null,
+              routeChanged: location.href !== routeBefore,
+              selected:
+                rowForIdentity(candidateIdentity)?.getAttribute?.(
+                  "data-app-action-sidebar-thread-selected",
+                ) ?? null,
+              currentThreadMatched:
+                currentThread !== undefined &&
+                sameThreadIdentity(currentThread, candidateIdentity),
+              visibleResponseCount: responseTargets().length,
+              matchingResponseFound:
+                responseTarget(candidateIdentity.threadId) !== null,
+            }),
+          );
         }
       }
       if (!(selectedRow instanceof HTMLElement) || selectedIdentity === null) {
         throw new Error(
-          "No native activity thread row had assistant response content",
+          "No native activity thread row had assistant response content: " +
+            JSON.stringify(selectionAttempts),
         );
       }
 
@@ -2614,7 +2700,7 @@ const exactUiHookSource = String.raw`    const exactAssistantMarkdownContext =
       const cloudLayout = rowLayout(cloudRow, visibleCloudRows());
 
       const target = await waitUntil(
-        responseTarget,
+        () => responseTarget(selectedIdentity.threadId),
         "a visible native assistant response target",
       );
       const walker = document.createTreeWalker(target, NodeFilter.SHOW_TEXT, {
