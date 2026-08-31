@@ -232,6 +232,19 @@ test("directly invoked shell scripts are executable", async () => {
   }
 });
 
+test("isolated live gate copies source without Git metadata", async () => {
+  const helper = await readFile(path.join(root, "scripts/run-isolated-live-gate.sh"), "utf8");
+  assert.match(
+    helper,
+    /sudo \/usr\/bin\/rsync -a --exclude='\.git' "\$source_root\/" "\$gate_home\/workspace"/,
+  );
+  assert.doesNotMatch(helper, /\/usr\/bin\/ditto "\$source_root"/);
+  assert.match(
+    helper,
+    /sudo \/usr\/bin\/ditto "\$app_source" "\$gate_home\/ChatGPT\.app"/,
+  );
+});
+
 test("privileged extraction uses only the root lock-pinned asar", async () => {
   const rebind = await source("rebind-chatgpt.yml");
   const extractor = await readFile(

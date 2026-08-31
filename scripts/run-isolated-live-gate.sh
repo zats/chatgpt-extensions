@@ -211,7 +211,7 @@ if sudo -u "$gate_user" /usr/bin/sudo -n /usr/bin/true 2>/dev/null; then
   exit 1
 fi
 
-sudo /usr/bin/ditto "$source_root" "$gate_home/workspace"
+sudo /usr/bin/rsync -a --exclude='.git' "$source_root/" "$gate_home/workspace"
 sudo /usr/bin/ditto "$app_source" "$gate_home/ChatGPT.app"
 sudo /usr/sbin/chown -R root:wheel "$gate_home/workspace" "$gate_home/ChatGPT.app"
 sudo /bin/chmod -R a+rX "$gate_home/workspace" "$gate_home/ChatGPT.app"

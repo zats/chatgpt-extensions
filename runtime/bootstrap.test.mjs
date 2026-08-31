@@ -8,6 +8,7 @@ const {
   createPrimaryDocumentClaim,
   createRendererLifecycle,
   isCurrentRendererDocument,
+  primaryAppShellReadyExpression,
   probeCompletionAllowsContinuation,
   requireCurrentRendererDocument,
   productExtensionDiagnosticsReady,
@@ -311,6 +312,36 @@ test("one primary renderer document owns the full live-probe suite", () => {
   assert.equal(claim.release("document-a"), true);
   assert.equal(claim.current(), undefined);
   assert.equal(claim.claim("document-b", true), true);
+});
+
+test("primary app shell selection delegates to the exact binding, not page text", () => {
+  const expression = primaryAppShellReadyExpression();
+  const evaluate = (host) =>
+    Function("window", `return ${expression}`)({ __CGPTX_HOST__: host });
+
+  assert.equal(evaluate(undefined), false);
+  assert.equal(evaluate({ _debug: {} }), false);
+  assert.equal(evaluate({ _debug: { primaryAppShellReady: () => false } }), false);
+  assert.equal(evaluate({ _debug: { primaryAppShellReady: () => true } }), true);
+  assert.doesNotMatch(expression, /New chat/);
+
+  const claim = createPrimaryDocumentClaim();
+  assert.equal(claim.claim("early-auxiliary", evaluate(undefined)), false);
+  assert.equal(
+    claim.claim(
+      "primary",
+      evaluate({ _debug: { primaryAppShellReady: () => true } }),
+    ),
+    true,
+  );
+  assert.equal(claim.release("primary"), true);
+  assert.equal(
+    claim.claim(
+      "replacement",
+      evaluate({ _debug: { primaryAppShellReady: () => true } }),
+    ),
+    true,
+  );
 });
 
 test("a replaced renderer document cannot write probe diagnostics", () => {

@@ -503,6 +503,12 @@ function createPrimaryDocumentClaim() {
   });
 }
 
+function primaryAppShellReadyExpression() {
+  return (
+    "window.__CGPTX_HOST__?._debug?.primaryAppShellReady?.() === true"
+  );
+}
+
 function isCurrentRendererDocument(lifecycle, contents, document) {
   return (
     lifecycle?.isCurrent(contents, document.id) === true &&
@@ -1678,27 +1684,13 @@ function initialize() {
     timeoutMilliseconds = 20_000,
   ) {
     const deadline = Date.now() + timeoutMilliseconds;
+    const expression = primaryAppShellReadyExpression();
     while (
       rendererLifecycle?.isCurrent(contents, document.id) &&
       Date.now() < deadline
     ) {
       try {
-        const primary = await contents.executeJavaScript(`(() => {
-          const visible = (element) => {
-            if (!(element instanceof HTMLElement) || !element.isConnected) {
-              return false;
-            }
-            const rect = element.getBoundingClientRect();
-            const style = getComputedStyle(element);
-            return rect.width > 0 && rect.height > 0 &&
-              style.display !== "none" && style.visibility !== "hidden";
-          };
-          return Array.from(document.querySelectorAll("button, a")).some(
-            (element) =>
-              element.textContent?.trim() === "New chat" && visible(element),
-          );
-        })()`);
-        if (primary === true) return true;
+        if (await contents.executeJavaScript(expression)) return true;
       } catch {
         return false;
       }
@@ -2686,6 +2678,7 @@ module.exports = Object.freeze({
   createPrimaryDocumentClaim,
   createRendererLifecycle,
   isCurrentRendererDocument,
+  primaryAppShellReadyExpression,
   probeCompletionAllowsContinuation,
   requireCurrentRendererDocument,
   rendererHostReadyExpression,
