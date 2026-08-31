@@ -56,6 +56,7 @@ fi
 sudo /usr/bin/ditto "$source_root" "$gate_home/workspace"
 sudo /usr/bin/ditto "$app_source" "$gate_home/ChatGPT.app"
 sudo /usr/sbin/chown -R root:wheel "$gate_home/workspace" "$gate_home/ChatGPT.app"
+sudo /bin/chmod -R a+rX "$gate_home/workspace" "$gate_home/ChatGPT.app"
 sudo /bin/chmod -R go-w "$gate_home/workspace" "$gate_home/ChatGPT.app"
 sudo /bin/mkdir -m 700 \
   "$gate_home/codex-home" \
