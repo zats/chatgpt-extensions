@@ -33,8 +33,8 @@ while /usr/bin/dscl . -search /Users UniqueID "$gate_uid" | /usr/bin/grep -q .; 
 done
 
 cleanup() {
-  sudo /usr/bin/pkill -KILL -u "$gate_uid" 2>/dev/null || true
   sudo /usr/bin/dscl . -delete "/Users/$gate_user" 2>/dev/null || true
+  sudo /usr/bin/pkill -KILL -u "$gate_uid" 2>/dev/null || true
   if [[ "$gate_home" == "/Users/$gate_user" && "$gate_user" =~ ^cxgate[0-9]+$ ]]; then
     sudo /bin/rm -rf "$gate_home"
   fi
@@ -91,15 +91,11 @@ set +e
 gate_status="$?"
 set -e
 
-sudo /usr/bin/pkill -KILL -u "$gate_uid" 2>/dev/null || true
 for ((remaining_checks = 5; remaining_checks > 0; remaining_checks -= 1)); do
+  sudo /usr/bin/pkill -KILL -u "$gate_uid" 2>/dev/null || true
   if ! /usr/bin/pgrep -u "$gate_uid" >/dev/null; then break; fi
   sleep 1
 done
-if /usr/bin/pgrep -u "$gate_uid" >/dev/null; then
-  echo "The isolated live gate still has a process" >&2
-  exit 1
-fi
 
 for input in "$gate_home/output/version-gate.json" "$gate_home/codex-home/auth.json"; do
   sudo /bin/test -f "$input"
@@ -118,4 +114,16 @@ sudo /usr/bin/install -o "$runner_uid" -g "$runner_gid" -m 600 \
 
 trap - EXIT
 cleanup
-exit "$gate_status"
+cleanup_status=0
+for ((remaining_checks = 5; remaining_checks > 0; remaining_checks -= 1)); do
+  sudo /usr/bin/pkill -KILL -u "$gate_uid" 2>/dev/null || true
+  if ! /usr/bin/pgrep -u "$gate_uid" >/dev/null; then break; fi
+  sleep 1
+done
+if /usr/bin/pgrep -u "$gate_uid" >/dev/null; then
+  echo "The isolated live gate still has a process after user removal" >&2
+  /bin/ps -o pid=,ppid=,stat=,comm= -U "$gate_uid" >&2 || true
+  cleanup_status=1
+fi
+if [[ "$gate_status" -ne 0 ]]; then exit "$gate_status"; fi
+exit "$cleanup_status"

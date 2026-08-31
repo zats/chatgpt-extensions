@@ -391,6 +391,16 @@ test("test authentication exists only after no-secret static tests and live runs
   assert.match(helper, /unexpectedly has sudo access/);
   assert.match(helper, /sudo \/bin\/test -f/);
   assert.doesNotMatch(helper, /\/usr\/bin\/test/);
+  const resultCopy = helper.indexOf(
+    '"$gate_home/output/version-gate.json" "$result_output"',
+  );
+  const normalCleanup = helper.indexOf("trap - EXIT", resultCopy);
+  const finalProcessCheck = helper.indexOf(
+    "still has a process after user removal",
+    normalCleanup,
+  );
+  assert.ok(resultCopy >= 0 && normalCleanup > resultCopy && finalProcessCheck > normalCleanup);
+  assert.match(helper, /ps -o pid=,ppid=,stat=,comm= -U "\$gate_uid"/);
 });
 
 test("job deadlines leave trusted cleanup time after each untrusted process bound", async () => {
