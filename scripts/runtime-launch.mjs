@@ -125,8 +125,9 @@ export function inspectChatGptApp(requestedApp, options = {}) {
   }
   const contents = path.join(appPath, "Contents");
   const infoFile = fs.realpathSync(path.join(contents, "Info.plist"));
-  const executableName = plistValue(infoFile, "CFBundleExecutable");
-  const bundleIdentifier = plistValue(infoFile, "CFBundleIdentifier");
+  const readPlistValue = options.readPlistValue ?? plistValue;
+  const executableName = readPlistValue(infoFile, "CFBundleExecutable");
+  const bundleIdentifier = readPlistValue(infoFile, "CFBundleIdentifier");
   if (bundleIdentifier !== stockBundleIdentifier) {
     throw new Error(`The selected app is not stock ChatGPT: ${bundleIdentifier}`);
   }
@@ -145,8 +146,8 @@ export function inspectChatGptApp(requestedApp, options = {}) {
     executable,
     infoFile,
     appAsarFile,
-    appVersion: plistValue(infoFile, "CFBundleShortVersionString"),
-    appBuild: plistValue(infoFile, "CFBundleVersion"),
+    appVersion: readPlistValue(infoFile, "CFBundleShortVersionString"),
+    appBuild: readPlistValue(infoFile, "CFBundleVersion"),
     appAsarSha256: sha256File(appAsarFile),
   });
 }

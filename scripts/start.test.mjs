@@ -64,6 +64,16 @@ function successfulStockVerification(calls) {
   };
 }
 
+function testPlistValue(infoFile, key) {
+  const source = fs.readFileSync(infoFile, "utf8");
+  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const value = new RegExp(
+    `<key>${escapedKey}</key>\\s*<string>([^<]+)</string>`,
+  ).exec(source)?.[1];
+  if (value === undefined) throw new Error(`Missing test plist key: ${key}`);
+  return value;
+}
+
 test("stock app inspection requires the Codex bundle and OpenAI signature", () => {
   const root = fs.mkdtempSync(path.join("/tmp", "chatgpt-stock-app."));
   const calls = [];
@@ -71,6 +81,7 @@ test("stock app inspection requires the Codex bundle and OpenAI signature", () =
     const app = createTestApp(root, "com.openai.codex");
     const identity = inspectChatGptApp(app, {
       runCommand: successfulStockVerification(calls),
+      readPlistValue: testPlistValue,
     });
     assert.equal(identity.bundleIdentifier, "com.openai.codex");
     assert.equal(identity.signingIdentifier, "com.openai.codex");
@@ -89,6 +100,7 @@ test("stock app inspection requires the Codex bundle and OpenAI signature", () =
       () =>
         inspectChatGptApp(app, {
           runCommand: successfulStockVerification([]),
+          readPlistValue: testPlistValue,
         }),
       /not stock ChatGPT: com\.openai\.chat/,
     );
