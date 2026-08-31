@@ -291,6 +291,9 @@ jobs:
       - request
       - existing-validation
     if: needs.existing-validation.result == 'success'
+    permissions:
+      actions: read
+      contents: read
     uses: ./.github/workflows/refresh-auth-handoff.yml
     with:
       artifact_name: ${{ needs.existing-validation.outputs.auth_artifact_name }}
@@ -507,6 +510,9 @@ jobs:
       - request
       - promotion-protected-validation
     if: needs.promotion-protected-validation.result == 'success'
+    permissions:
+      actions: read
+      contents: read
     uses: ./.github/workflows/refresh-auth-handoff.yml
     with:
       artifact_name: ${{ needs.promotion-protected-validation.outputs.auth_artifact_name }}
@@ -1289,6 +1295,9 @@ jobs:
       - request
       - generate
     if: needs.generate.result == 'success'
+    permissions:
+      actions: read
+      contents: read
     uses: ./.github/workflows/refresh-auth-handoff.yml
     with:
       artifact_name: ${{ needs.generate.outputs.agent-auth-artifact-name }}
@@ -1560,6 +1569,9 @@ jobs:
       - request
       - precommit-validation
     if: needs.precommit-validation.result == 'success'
+    permissions:
+      actions: read
+      contents: read
     uses: ./.github/workflows/refresh-auth-handoff.yml
     with:
       artifact_name: ${{ needs.precommit-validation.outputs.test-auth-artifact-name }}
@@ -1673,6 +1685,9 @@ jobs:
       - request
       - candidate-validation
     if: needs.candidate-validation.result == 'success'
+    permissions:
+      actions: read
+      contents: read
     uses: ./.github/workflows/refresh-auth-handoff.yml
     with:
       artifact_name: ${{ needs.candidate-validation.outputs.auth_artifact_name }}
@@ -1761,6 +1776,9 @@ jobs:
       - request
       - protected-validation
     if: needs.protected-validation.result == 'success'
+    permissions:
+      actions: read
+      contents: read
     uses: ./.github/workflows/refresh-auth-handoff.yml
     with:
       artifact_name: ${{ needs.protected-validation.outputs.auth_artifact_name }}

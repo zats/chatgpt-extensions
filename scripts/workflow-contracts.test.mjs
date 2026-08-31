@@ -255,6 +255,31 @@ test("live credential refresh occurs between authenticated stages", async () => 
   assert.match(value, /environment: codex-agent/);
 });
 
+test("every authentication refresh caller grants the reusable workflow permissions", async () => {
+  for (const name of await readdir(workflows)) {
+    if (!name.endsWith(".yml") || name === "refresh-auth-handoff.yml") continue;
+    const value = await source(name);
+    const workflowPermissions = value
+      .slice(0, value.indexOf("\njobs:\n"))
+      .match(/^permissions:\n((?:  [^\n]+\n)+)/m)?.[1] ?? "";
+    const jobStarts = [...value.matchAll(/^  [A-Za-z0-9_-]+:\s*$/gm)].map(
+      ({ index }) => index,
+    );
+    for (const match of value.matchAll(
+      /^    uses: \.\/\.github\/workflows\/refresh-auth-handoff\.yml$/gm,
+    )) {
+      const jobStart = jobStarts.findLast((index) => index < match.index);
+      const nextJob = jobStarts.find((index) => index > match.index);
+      assert.notEqual(jobStart, undefined, `${name} refresh caller job`);
+      const job = value.slice(jobStart, nextJob === undefined ? value.length : nextJob);
+      const effectivePermissions = job.match(/\n    permissions:\n((?:      [^\n]+\n)+)/)?.[1]
+        ?? workflowPermissions;
+      assert.match(effectivePermissions, /actions: read/, `${name} refresh caller`);
+      assert.match(effectivePermissions, /contents: read/, `${name} refresh caller`);
+    }
+  }
+});
+
 test("each live gate has a unique immutable evidence and handoff identity", async () => {
   const rebind = await source("rebind-chatgpt.yml");
   const reusable = await source("test.yml");
