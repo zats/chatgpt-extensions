@@ -5,12 +5,17 @@ import test from "node:test";
 import bootstrap from "./bootstrap.cjs";
 
 const {
-  createSingleDocumentClaim,
+  createPrimaryDocumentClaim,
   createRendererLifecycle,
+  isCurrentRendererDocument,
+  probeCompletionAllowsContinuation,
+  requireCurrentRendererDocument,
   productExtensionDiagnosticsReady,
   productExtensionRealUiDiagnosticsReady,
+  sanitizeProductExtensionRealUiDiagnostics,
   rendererHostReadyExpression,
   richContentFallbacksReady,
+  richContentFullyUnmounted,
   richContentInteractionsReady,
   richContentOwnersReady,
   richContentRegistrationsReady,
@@ -18,6 +23,7 @@ const {
   richMessageProbeEventFile,
   startRendererLifecycle,
   uiSurfaceProbeEventFile,
+  writeCurrentRendererDocumentDiagnostics,
 } = bootstrap;
 
 const richFallbackSurfaces = [
@@ -254,16 +260,184 @@ test("real product diagnostics require actual owners and both sidebar layouts", 
   );
 });
 
-test("one renderer document owns the rich-content probe at a time", () => {
-  const claim = createSingleDocumentClaim();
-  assert.equal(claim.claim("document-a"), true);
-  assert.equal(claim.claim("document-a"), true);
-  assert.equal(claim.claim("document-b"), false);
+test("real product diagnostic redaction preserves the raw validation result", () => {
+  const diagnostics = completeProductExtensionRealUiDiagnostics();
+  const safe = sanitizeProductExtensionRealUiDiagnostics(diagnostics);
+  assert.equal(safe.validationPassed, true);
+  assert.equal(safe.thread.hostId, "redacted-host");
+  assert.equal(safe.thread.threadId, "redacted-thread");
+  assert.equal(safe.thread.title, "redacted-title");
+  assert.equal(safe.reactions.selectedText, "redacted-selection");
+
+  const invalid = sanitizeProductExtensionRealUiDiagnostics({
+    ...diagnostics,
+    threadColors: {
+      ...diagnostics.threadColors,
+      stored: {
+        ...diagnostics.threadColors.stored,
+        thread: {
+          ...diagnostics.threadColors.stored.thread,
+          hostId: "different-host",
+        },
+      },
+    },
+  });
+  assert.equal(invalid.validationPassed, false);
+  assert.equal(invalid.thread.hostId, invalid.threadColors.stored.thread.hostId);
+
+  const privateValue = "PrivateThreadTitle123";
+  const privateDiagnostics = completeProductExtensionRealUiDiagnostics();
+  privateDiagnostics.thread.hostId = privateValue;
+  privateDiagnostics.thread.threadId = privateValue;
+  privateDiagnostics.thread.title = privateValue;
+  privateDiagnostics.threadColors.stored.thread.hostId = privateValue;
+  privateDiagnostics.threadColors.stored.thread.threadId = privateValue;
+  privateDiagnostics.reactions.selectedText = privateValue;
+  privateDiagnostics.reactions.persisted.selectedText = privateValue;
+  const privateSafe = sanitizeProductExtensionRealUiDiagnostics(privateDiagnostics);
+  assert.equal(privateSafe.validationPassed, true);
+  assert.doesNotMatch(JSON.stringify(privateSafe), new RegExp(privateValue));
+});
+
+test("one primary renderer document owns the full live-probe suite", () => {
+  const claim = createPrimaryDocumentClaim();
+  assert.equal(claim.claim("auxiliary-document", false), false);
+  assert.equal(claim.current(), undefined);
+  assert.equal(claim.claim("document-a", true), true);
+  assert.equal(claim.claim("document-a", true), true);
+  assert.equal(claim.claim("document-b", true), false);
   assert.equal(claim.current(), "document-a");
   assert.equal(claim.release("document-b"), false);
   assert.equal(claim.release("document-a"), true);
   assert.equal(claim.current(), undefined);
-  assert.equal(claim.claim("document-b"), true);
+  assert.equal(claim.claim("document-b", true), true);
+});
+
+test("a replaced renderer document cannot write probe diagnostics", () => {
+  let currentDocumentId = "document-a";
+  let destroyed = false;
+  let writes = 0;
+  const contents = {
+    isDestroyed: () => destroyed,
+  };
+  const lifecycle = {
+    isCurrent: (candidate, documentId) =>
+      candidate === contents && documentId === currentDocumentId,
+  };
+  const documentA = { id: "document-a" };
+  const documentB = { id: "document-b" };
+
+  assert.equal(
+    isCurrentRendererDocument(lifecycle, contents, documentA),
+    true,
+  );
+  writeCurrentRendererDocumentDiagnostics(
+    lifecycle,
+    contents,
+    documentA,
+    () => {
+      writes += 1;
+    },
+  );
+  assert.equal(writes, 1);
+
+  currentDocumentId = "document-b";
+  assert.equal(
+    isCurrentRendererDocument(lifecycle, contents, documentA),
+    false,
+  );
+  assert.throws(
+    () =>
+      writeCurrentRendererDocumentDiagnostics(
+        lifecycle,
+        contents,
+        documentA,
+        () => {
+          writes += 1;
+        },
+      ),
+    /renderer document is no longer current/,
+  );
+  assert.equal(writes, 1);
+  writeCurrentRendererDocumentDiagnostics(
+    lifecycle,
+    contents,
+    documentB,
+    () => {
+      writes += 1;
+    },
+  );
+  assert.equal(writes, 2);
+
+  currentDocumentId = "document-a";
+  destroyed = true;
+  assert.throws(
+    () =>
+      writeCurrentRendererDocumentDiagnostics(
+        lifecycle,
+        contents,
+        documentA,
+        () => {
+          writes += 1;
+        },
+      ),
+    /renderer document is no longer current/,
+  );
+  assert.equal(writes, 2);
+});
+
+test("probe continuation waits for successful completion on the current document", async () => {
+  let resolveCompletion;
+  const completion = new Promise((resolve) => {
+    resolveCompletion = resolve;
+  });
+  let currentDocumentId = "document-a";
+  const contents = { isDestroyed: () => false };
+  const lifecycle = {
+    isCurrent: (candidate, documentId) =>
+      candidate === contents && documentId === currentDocumentId,
+  };
+  const document = { id: "document-a" };
+  let continued;
+  const result = probeCompletionAllowsContinuation(
+    completion,
+    lifecycle,
+    contents,
+    document,
+  ).then((value) => {
+    continued = value;
+    return value;
+  });
+
+  await Promise.resolve();
+  assert.equal(continued, undefined);
+  resolveCompletion(true);
+  assert.equal(await result, true);
+
+  currentDocumentId = "document-b";
+  assert.equal(
+    await probeCompletionAllowsContinuation(
+      Promise.resolve(true),
+      lifecycle,
+      contents,
+      document,
+    ),
+    false,
+  );
+});
+
+test("probe continuation stops after an unsuccessful completion", async () => {
+  const contents = { isDestroyed: () => false };
+  const lifecycle = { isCurrent: () => true };
+  assert.equal(
+    await probeCompletionAllowsContinuation(
+      Promise.resolve(false),
+      lifecycle,
+      contents,
+      { id: "document-a" },
+    ),
+    false,
+  );
 });
 
 test("UI surface event logs are isolated by renderer document", () => {
@@ -504,6 +678,53 @@ test("unmount diagnostics keep the mounted proof after the probe disappears", ()
   assert.equal(diagnostics.postUnmount, postUnmount);
 });
 
+test("rich-content final unmount requires balanced lifecycle counts", () => {
+  const balanced = {
+    lifecycle: {
+      mounts: {
+        assistantDirective: 3,
+        assistantContentReference: 2,
+        assistantCodeBlock: 4,
+        conversationItem: 5,
+      },
+      disposals: {
+        assistantDirective: 3,
+        assistantContentReference: 2,
+        assistantCodeBlock: 4,
+        conversationItem: 5,
+      },
+    },
+  };
+  assert.equal(richContentFullyUnmounted(balanced), true);
+  assert.equal(richContentFullyUnmounted({}), false);
+  assert.equal(
+    richContentFullyUnmounted({
+      ...balanced,
+      lifecycle: {
+        ...balanced.lifecycle,
+        disposals: {
+          ...balanced.lifecycle.disposals,
+          assistantCodeBlock: 3,
+        },
+      },
+    }),
+    false,
+  );
+  assert.equal(
+    richContentFullyUnmounted({
+      ...balanced,
+      lifecycle: {
+        ...balanced.lifecycle,
+        mounts: {
+          ...balanced.lifecycle.mounts,
+          conversationItem: 6,
+        },
+      },
+    }),
+    false,
+  );
+});
+
 test("renderer binding readiness uses a safely quoted selected app version", () => {
   const version = "26.900.1' || true || '";
   const expression = rendererHostReadyExpression(version);
@@ -640,6 +861,14 @@ test("full navigations get unique document ids and ineligible pages disconnect",
   contents.emit("dom-ready");
   const second = state.connected[1];
   assert.notEqual(second.id, first.id);
+  assert.throws(
+    () => requireCurrentRendererDocument(state.lifecycle, contents, first.id),
+    /renderer document is no longer current/,
+  );
+  assert.equal(
+    requireCurrentRendererDocument(state.lifecycle, contents, second.id),
+    second,
+  );
   assert.equal(state.lifecycle.contentsForDocument(first.id), undefined);
   assert.equal(state.lifecycle.contentsForDocument(second.id), contents);
 
@@ -681,7 +910,10 @@ test("same-document navigation keeps the active renderer document", () => {
   assert.deepEqual(state.disconnected, []);
   assert.equal(state.connected.length, 1);
   assert.equal(state.injected.length, 1);
-  assert.equal(state.lifecycle.documentFor(contents, contents.url).id, document.id);
+  assert.equal(
+    state.lifecycle.currentDocumentFor(contents, document.id),
+    document,
+  );
 });
 
 test("the preload pagehide notice disconnects only its current document", () => {
@@ -692,10 +924,55 @@ test("the preload pagehide notice disconnects only its current document", () => 
 
   assert.equal(state.lifecycle.pageHidden(contents, "other-document"), false);
   assert.equal(state.lifecycle.pageHidden(contents, document.id), true);
+  assert.equal(state.lifecycle.isCurrent(contents, document.id), false);
+  assert.equal(state.lifecycle.contentsForDocument(document.id), undefined);
   assert.equal(state.lifecycle.pageHidden(contents, document.id), false);
   contents.emit("dom-ready");
   assert.deepEqual(state.disconnected, [
     { documentId: document.id, reason: "pagehide" },
   ]);
   assert.equal(state.connected.length, 1);
+});
+
+test("a runtime request accepts its current renderer document", () => {
+  const state = harness();
+  const contents = new FakeContents(7, "app://chatgpt.com/");
+  state.lifecycle.attach(contents);
+  const document = state.connected[0];
+
+  assert.equal(
+    requireCurrentRendererDocument(state.lifecycle, contents, document.id),
+    document,
+  );
+  assert.throws(
+    () => requireCurrentRendererDocument(state.lifecycle, contents, ""),
+    /document ID is required/,
+  );
+  assert.throws(
+    () =>
+      requireCurrentRendererDocument(
+        state.lifecycle,
+        contents,
+        "other-document",
+      ),
+    /renderer document is no longer current/,
+  );
+});
+
+test("a runtime request rejects its renderer document after pagehide", () => {
+  const state = harness();
+  const contents = new FakeContents(8, "app://chatgpt.com/");
+  state.lifecycle.attach(contents);
+  const document = state.connected[0];
+
+  assert.equal(state.lifecycle.pageHidden(contents, document.id), true);
+  assert.throws(
+    () =>
+      requireCurrentRendererDocument(
+        state.lifecycle,
+        contents,
+        document.id,
+      ),
+    /renderer document is no longer current/,
+  );
 });

@@ -29,6 +29,32 @@ const richContentOwnerMinimums = Object.freeze({
   cloudConversationItem: 1,
 });
 
+const richContentLifecycleKinds = Object.freeze([
+  "assistantDirective",
+  "assistantContentReference",
+  "assistantCodeBlock",
+  "conversationItem",
+]);
+
+const safeDiagnosticErrorNames = new Set([
+  "AbortError",
+  "AggregateError",
+  "Error",
+  "RangeError",
+  "ReferenceError",
+  "SyntaxError",
+  "TimeoutError",
+  "TypeError",
+  "URIError",
+]);
+
+const realUiDiagnosticRedactions = Object.freeze({
+  hostId: "redacted-host",
+  selectedText: "redacted-selection",
+  threadId: "redacted-thread",
+  title: "redacted-title",
+});
+
 const richContentInteractionLabels = Object.freeze({
   directive: Object.freeze({
     surface: "directive",
@@ -141,6 +167,82 @@ function richContentUnmountDiagnostics(
     unmounted,
     postUnmount,
   };
+}
+
+function richContentFullyUnmounted(diagnostics) {
+  const mounts = diagnostics?.lifecycle?.mounts;
+  const disposals = diagnostics?.lifecycle?.disposals;
+  return richContentLifecycleKinds.every(
+    (kind) =>
+      Number.isInteger(mounts?.[kind]) &&
+      Number.isInteger(disposals?.[kind]) &&
+      disposals[kind] === mounts[kind],
+  );
+}
+
+function diagnosticErrorName(error) {
+  const name =
+    error !== null &&
+    typeof error === "object" &&
+    typeof error.name === "string"
+      ? error.name
+      : "Error";
+  return safeDiagnosticErrorNames.has(name) ? name : "Error";
+}
+
+function safeMainActivationResults(results) {
+  if (!Array.isArray(results)) return Object.freeze([]);
+  const extensionIdPattern = /^[a-z0-9][a-z0-9._-]{0,127}$/;
+  const statuses = new Set(["active", "failed", "stopped"]);
+  return Object.freeze(
+    results.map((result) =>
+      Object.freeze({
+        extensionId:
+          typeof result?.extensionId === "string" &&
+          extensionIdPattern.test(result.extensionId)
+            ? result.extensionId
+            : "invalid-extension",
+        status: statuses.has(result?.status) ? result.status : "failed",
+        ...(result?.error
+          ? { errorName: diagnosticErrorName(result.error) }
+          : {}),
+      }),
+    ),
+  );
+}
+
+function safeRect(rect) {
+  const number = (value) => (Number.isFinite(value) ? value : null);
+  return Object.freeze({
+    width: number(rect?.width),
+    height: number(rect?.height),
+    top: number(rect?.top),
+    right: number(rect?.right),
+    bottom: number(rect?.bottom),
+    left: number(rect?.left),
+  });
+}
+
+function safeRealUiLayout(layout) {
+  return Object.freeze({
+    rowFound: layout?.rowFound === true,
+    titleTriggerFound: layout?.titleTriggerFound === true,
+    indicatorFound: layout?.indicatorFound === true,
+    uncoloredRowFound: layout?.uncoloredRowFound === true,
+    row: safeRect(layout?.row),
+    indicator: safeRect(layout?.indicator),
+    indicatorCount: Number.isInteger(layout?.indicatorCount)
+      ? layout.indicatorCount
+      : null,
+    indicatorBackground:
+      layout?.indicatorBackground === "rgb(58, 131, 247)"
+        ? "rgb(58, 131, 247)"
+        : null,
+    indicatorFillsRow: layout?.indicatorFillsRow === true,
+    titleGap: Number.isFinite(layout?.titleGap) ? layout.titleGap : null,
+    coloredAndUncoloredTitlesAligned:
+      layout?.coloredAndUncoloredTitlesAligned === true,
+  });
 }
 
 function productExtensionDiagnosticsReady(diagnostics) {
@@ -260,11 +362,135 @@ function productExtensionRealUiDiagnosticsReady(diagnostics) {
   );
 }
 
-function createSingleDocumentClaim() {
+function sanitizeProductExtensionRealUiDiagnostics(diagnostics) {
+  const thread = diagnostics?.thread;
+  const threadColors = diagnostics?.threadColors;
+  const cloud = threadColors?.cloud;
+  const stored = threadColors?.stored;
+  const reactions = diagnostics?.reactions;
+  const persistedReaction = reactions?.persisted;
+  const settings = diagnostics?.settings;
+  const validationPassed = productExtensionRealUiDiagnosticsReady(diagnostics);
+  const present = (value, replacement) =>
+    typeof value === "string" && value.length > 0 ? replacement : null;
+  const preset = (selection) =>
+    Object.freeze({
+      type: selection?.type === "preset" ? "preset" : null,
+      id: selection?.id === "blue" ? "blue" : null,
+    });
+
+  return Object.freeze({
+    validationPassed,
+    realDom: validationPassed && diagnostics?.realDom === true,
+    thread: Object.freeze({
+      scope: thread?.scope === "execution" ? "execution" : null,
+      hostId: present(thread?.hostId, realUiDiagnosticRedactions.hostId),
+      threadId: present(thread?.threadId, realUiDiagnosticRedactions.threadId),
+      title: present(thread?.title, realUiDiagnosticRedactions.title),
+      signedInHeaderTitleFound: thread?.signedInHeaderTitleFound === true,
+    }),
+    threadColors: Object.freeze({
+      nativeMenuTrigger: threadColors?.nativeMenuTrigger === true,
+      nativeMenuAction: threadColors?.nativeMenuAction === true,
+      nativeFlyoutAction: threadColors?.nativeFlyoutAction === true,
+      header: Object.freeze({
+        found: threadColors?.header?.found === true,
+        titleFound: threadColors?.header?.titleFound === true,
+        blueRegionFound: threadColors?.header?.blueRegionFound === true,
+        background:
+          threadColors?.header?.background === "rgb(58, 131, 247)"
+            ? "rgb(58, 131, 247)"
+            : null,
+      }),
+      activity: safeRealUiLayout(threadColors?.activity),
+      standard: safeRealUiLayout(threadColors?.standard),
+      activityRowIsTaller: threadColors?.activityRowIsTaller === true,
+      cloud: Object.freeze({
+        scope: cloud?.scope === "cloud" ? "cloud" : null,
+        menuActionFound: cloud?.menuActionFound === true,
+        menuActionClicked: cloud?.menuActionClicked === true,
+        ownerMatched: cloud?.ownerMatched === true,
+        layout: safeRealUiLayout(cloud?.layout),
+        stored: Object.freeze({
+          scope: cloud?.stored?.scope === "cloud" ? "cloud" : null,
+          selection: preset(cloud?.stored?.selection),
+        }),
+      }),
+      stored: Object.freeze({
+        thread: Object.freeze({
+          scope: stored?.thread?.scope === "execution" ? "execution" : null,
+          hostId: present(
+            stored?.thread?.hostId,
+            realUiDiagnosticRedactions.hostId,
+          ),
+          threadId: present(
+            stored?.thread?.threadId,
+            realUiDiagnosticRedactions.threadId,
+          ),
+        }),
+        selection: preset(stored?.selection),
+      }),
+    }),
+    reactions: Object.freeze({
+      targetFound: reactions?.targetFound === true,
+      selectedText: present(
+        reactions?.selectedText,
+        realUiDiagnosticRedactions.selectedText,
+      ),
+      actionFound: reactions?.actionFound === true,
+      actionVisible: reactions?.actionVisible === true,
+      nativeToolbarFound: reactions?.nativeToolbarFound === true,
+      sharesNativeActionComponent:
+        reactions?.sharesNativeActionComponent === true,
+      creationCountBefore: Number.isInteger(reactions?.creationCountBefore)
+        ? reactions.creationCountBefore
+        : null,
+      creationCountAfter: Number.isInteger(reactions?.creationCountAfter)
+        ? reactions.creationCountAfter
+        : null,
+      composerAnnotationFound: reactions?.composerAnnotationFound === true,
+      persisted: Object.freeze({
+        annotation:
+          persistedReaction?.annotation === "User reacted with 👍"
+            ? "User reacted with 👍"
+            : null,
+        selectedText: present(
+          persistedReaction?.selectedText,
+          realUiDiagnosticRedactions.selectedText,
+        ),
+        submit: persistedReaction?.submit === false ? false : null,
+      }),
+    }),
+    settings: Object.freeze({
+      opened: settings?.opened === true,
+      searchFieldFound: settings?.searchFieldFound === true,
+      queryAccepted: settings?.queryAccepted === true,
+      queryClearedAfterSelection:
+        settings?.queryClearedAfterSelection === true,
+      searchResultFound: settings?.searchResultFound === true,
+      searchResultClicked: settings?.searchResultClicked === true,
+      selectedPane:
+        settings?.selectedPane === "extensions.installed"
+          ? "extensions.installed"
+          : null,
+      threadColorsVisible: settings?.threadColorsVisible === true,
+      refreshControlAbsent: settings?.refreshControlAbsent === true,
+      globalErrorAbsent: settings?.globalErrorAbsent === true,
+    }),
+  });
+}
+
+function createPrimaryDocumentClaim() {
   let documentId;
   return Object.freeze({
-    claim(candidate) {
-      if (typeof candidate !== "string" || candidate.length === 0) return false;
+    claim(candidate, primary) {
+      if (
+        primary !== true ||
+        typeof candidate !== "string" ||
+        candidate.length === 0
+      ) {
+        return false;
+      }
       documentId ??= candidate;
       return documentId === candidate;
     },
@@ -275,6 +501,37 @@ function createSingleDocumentClaim() {
     },
     current: () => documentId,
   });
+}
+
+function isCurrentRendererDocument(lifecycle, contents, document) {
+  return (
+    lifecycle?.isCurrent(contents, document.id) === true &&
+    contents.isDestroyed?.() !== true
+  );
+}
+
+function writeCurrentRendererDocumentDiagnostics(
+  lifecycle,
+  contents,
+  document,
+  write,
+) {
+  if (!isCurrentRendererDocument(lifecycle, contents, document)) {
+    throw new Error("The renderer document is no longer current");
+  }
+  return write();
+}
+
+async function probeCompletionAllowsContinuation(
+  completion,
+  lifecycle,
+  contents,
+  document,
+) {
+  return (
+    (await completion) === true &&
+    isCurrentRendererDocument(lifecycle, contents, document)
+  );
 }
 
 function uiSurfaceProbeEventFile(documentId) {
@@ -294,6 +551,17 @@ function richMessageProbeEventFile(documentId) {
 
 function rendererHostReadyExpression(appVersion) {
   return `Boolean(window.__CGPTX_HOST__ && window.__CGPTX_HOST__.version === ${JSON.stringify(appVersion)})`;
+}
+
+function requireCurrentRendererDocument(lifecycle, contents, documentId) {
+  if (typeof documentId !== "string" || documentId.length === 0) {
+    throw new TypeError("Renderer document ID is required");
+  }
+  const document = lifecycle?.currentDocumentFor?.(contents, documentId);
+  if (!document) {
+    throw new Error("The renderer document is no longer current");
+  }
+  return document;
 }
 
 function createRendererLifecycle(options) {
@@ -344,12 +612,18 @@ function createRendererLifecycle(options) {
     return createRecord(contents, url).document;
   }
 
-  function documentFor(contents, url) {
-    return (records.get(contents) ?? createRecord(contents, url)).document;
+  function currentDocumentFor(contents, documentId) {
+    const record = records.get(contents);
+    return (
+      record?.document.id === documentId &&
+      record.inactive !== true
+        ? record.document
+        : undefined
+    );
   }
 
   function isCurrent(contents, documentId) {
-    return records.get(contents)?.document.id === documentId;
+    return currentDocumentFor(contents, documentId) !== undefined;
   }
 
   function ready(contents) {
@@ -445,7 +719,7 @@ function createRendererLifecycle(options) {
     attach,
     beginDocument,
     contentsForDocument,
-    documentFor,
+    currentDocumentFor,
     isCurrent,
     pageHidden,
     ready,
@@ -547,6 +821,11 @@ function initialize() {
   const productExtensionRealUiProbeRequested = testProbeRequested(
     "product-extension-real-ui-probe",
   );
+  const liveProbeSuiteRequested =
+    richContentProbeRequested ||
+    uiSurfaceProbeRequested ||
+    productExtensionProbeRequested ||
+    productExtensionRealUiProbeRequested;
   function log(event, data = {}) {
     try {
       fs.mkdirSync(logDirectory, { recursive: true, mode: 0o700 });
@@ -583,7 +862,9 @@ function initialize() {
       })),
     });
   } catch (error) {
-    log("launch-configuration-invalid", { error: String(error) });
+    log("launch-configuration-invalid", {
+      errorName: diagnosticErrorName(error),
+    });
     return;
   }
 
@@ -599,7 +880,9 @@ function initialize() {
     rendererHostSource = fs.readFileSync(launch.binding.rendererHostFile, "utf8");
     hostSource = fs.readFileSync(launch.binding.hostFile, "utf8");
   } catch (error) {
-    log("runtime-artifact-unreadable", { error: String(error) });
+    log("runtime-artifact-unreadable", {
+      errorName: diagnosticErrorName(error),
+    });
     return;
   }
   try {
@@ -616,7 +899,9 @@ function initialize() {
       adapterDigest: hostSourceDigest,
     });
   } catch (error) {
-    log("binding-host-patch-failed", { error: String(error) });
+    log("binding-host-patch-failed", {
+      errorName: diagnosticErrorName(error),
+    });
     return;
   }
 
@@ -625,10 +910,7 @@ function initialize() {
     launch.extensions.map((extension) => [extension.id, extension]),
   );
   const activationReports = new Map();
-  const richContentProbeClaim = createSingleDocumentClaim();
-  const uiSurfaceProbeClaim = createSingleDocumentClaim();
-  const productExtensionProbeClaim = createSingleDocumentClaim();
-  const productExtensionRealUiProbeClaim = createSingleDocumentClaim();
+  const liveProbeSuiteClaim = createPrimaryDocumentClaim();
   const richContentProbePollers = new Map();
   let electronNamespace;
   let mainHost;
@@ -641,11 +923,17 @@ function initialize() {
     stop();
   }
 
-  function writeRichContentDiagnostics(name, diagnostics) {
-    fs.writeFileSync(
-      path.join(requestedExtensionTestRoot, name),
-      `${JSON.stringify(diagnostics, null, 2)}\n`,
-      { encoding: "utf8", mode: 0o600 },
+  function writeProbeDiagnostics(contents, document, name, diagnostics) {
+    return writeCurrentRendererDocumentDiagnostics(
+      rendererLifecycle,
+      contents,
+      document,
+      () =>
+        fs.writeFileSync(
+          path.join(requestedExtensionTestRoot, name),
+          `${JSON.stringify(diagnostics, null, 2)}\n`,
+          { encoding: "utf8", mode: 0o600 },
+        ),
     );
   }
 
@@ -821,68 +1109,106 @@ function initialize() {
       requestedExtensionTestRoot,
       "rich-content-unmount-request",
     );
-    let stopped = false;
+    let settled = false;
     let handling = false;
     let timer;
-    const stop = () => {
-      if (stopped) return;
-      stopped = true;
+    let resolveCompletion;
+    const completion = new Promise((resolve) => {
+      resolveCompletion = resolve;
+    });
+    const finish = (completed) => {
+      if (settled) return false;
+      settled = true;
       if (timer) clearInterval(timer);
+      if (richContentProbePollers.get(document.id) === stop) {
+        richContentProbePollers.delete(document.id);
+      }
+      resolveCompletion(completed === true);
+      return true;
     };
+    const stop = () => finish(false);
     const inspect = async () => {
-      if (stopped || handling) return;
+      if (settled || handling) return;
       if (
-        !rendererLifecycle?.isCurrent(contents, document.id) ||
-        contents.isDestroyed?.()
+        !isCurrentRendererDocument(rendererLifecycle, contents, document)
       ) {
-        stopRichContentProbePoller(document.id);
+        finish(false);
         return;
       }
-      if (!fs.existsSync(requestFile)) return;
+      try {
+        if (!fs.existsSync(requestFile)) return;
+      } catch {
+        finish(false);
+        return;
+      }
       handling = true;
+      let completed = false;
       let diagnostics = { ...mountedDiagnostics, unmounted: false };
       try {
         fs.unlinkSync(requestFile);
         const unmounted = await contents.executeJavaScript(
           "window.__CGPTX_HOST__?._debug?.unmountRichContentProbe?.() === true",
         );
-        diagnostics = richContentUnmountDiagnostics(
-          mountedDiagnostics,
-          unmounted,
-          await readRichContentDiagnostics(contents),
-        );
-        writeRichContentDiagnostics(
-          "rich-content-unmount-diagnostics.json",
-          diagnostics,
-        );
         if (!unmounted) {
           throw new Error("The exact rich-content probe did not unmount");
         }
+        const postUnmount = await waitForRichContentDiagnostics(
+          contents,
+          document,
+          richContentFullyUnmounted,
+          20_000,
+        );
+        diagnostics = richContentUnmountDiagnostics(
+          mountedDiagnostics,
+          unmounted,
+          postUnmount,
+        );
+        if (!richContentFullyUnmounted(postUnmount)) {
+          throw new Error("The exact rich-content probe did not fully dispose");
+        }
+        writeProbeDiagnostics(
+          contents,
+          document,
+          "rich-content-unmount-diagnostics.json",
+          diagnostics,
+        );
         log("rich-content-probe-unmounted", {
           webContentsId: contents.id,
           documentId: document.id,
           diagnostics,
         });
+        completed = true;
       } catch (error) {
-        diagnostics = { ...diagnostics, error: String(error) };
-        writeRichContentDiagnostics(
-          "rich-content-unmount-diagnostics.json",
-          diagnostics,
-        );
-        log("rich-content-probe-unmount-failed", {
-          webContentsId: contents.id,
-          documentId: document.id,
-          diagnostics,
-          error: String(error),
-        });
+        if (!isCurrentRendererDocument(rendererLifecycle, contents, document)) {
+          return;
+        }
+        diagnostics = {
+          ...diagnostics,
+          errorName: diagnosticErrorName(error),
+        };
+        try {
+          writeProbeDiagnostics(
+            contents,
+            document,
+            "rich-content-unmount-diagnostics.json",
+            diagnostics,
+          );
+          log("rich-content-probe-unmount-failed", {
+            webContentsId: contents.id,
+            documentId: document.id,
+            diagnostics,
+            errorName: diagnosticErrorName(error),
+          });
+        } catch {}
       } finally {
-        stopRichContentProbePoller(document.id);
+        finish(completed);
       }
     };
     timer = setInterval(() => void inspect(), 50);
     timer.unref?.();
     richContentProbePollers.set(document.id, stop);
     void inspect();
+    return completion;
   }
 
   async function interactWithUiSurfaceProbe(contents, document) {
@@ -1321,10 +1647,11 @@ function initialize() {
             result?.changed !== true);
       },
     );
-    fs.writeFileSync(
-      path.join(requestedExtensionTestRoot, "ui-surface-diagnostics.json"),
-      `${JSON.stringify(diagnostics, null, 2)}\n`,
-      { encoding: "utf8", mode: 0o600 },
+    writeProbeDiagnostics(
+      contents,
+      document,
+      "ui-surface-diagnostics.json",
+      diagnostics,
     );
     const missingStateAttachments = ["home", "thread"].flatMap((state) => {
       const value = diagnostics?.states?.[state];
@@ -1406,7 +1733,7 @@ function initialize() {
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
     throw new Error(
-      `Thread Colors did not persist the probe selection: ${String(lastError)}`,
+      `Thread Colors did not persist the probe selection (${diagnosticErrorName(lastError)})`,
     );
   }
 
@@ -1445,11 +1772,11 @@ function initialize() {
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
     throw new Error(
-      `Thread Colors did not persist a ${scope} probe selection: ${String(lastError)}`,
+      `Thread Colors did not persist a ${scope} probe selection (${diagnosticErrorName(lastError)})`,
     );
   }
 
-  async function interactWithProductExtensions(contents) {
+  async function interactWithProductExtensions(contents, document) {
     const diagnostics = await contents.executeJavaScript(
       "window.__CGPTX_HOST__?._debug?.runProductExtensionProbe?.()",
     );
@@ -1467,13 +1794,11 @@ function initialize() {
         ),
       },
     };
-    fs.writeFileSync(
-      path.join(
-        requestedExtensionTestRoot,
-        "product-extension-diagnostics.json",
-      ),
-      `${JSON.stringify(complete, null, 2)}\n`,
-      { encoding: "utf8", mode: 0o600 },
+    writeProbeDiagnostics(
+      contents,
+      document,
+      "product-extension-diagnostics.json",
+      complete,
     );
     if (!productExtensionDiagnosticsReady(complete)) {
       throw new Error(
@@ -1483,23 +1808,24 @@ function initialize() {
     return complete;
   }
 
-  async function interactWithProductExtensionsRealUi(contents) {
+  async function interactWithProductExtensionsRealUi(contents, document) {
     let diagnostics;
     try {
       diagnostics = await contents.executeJavaScript(
         "window.__CGPTX_HOST__?._debug?.runProductExtensionRealUiProbe?.()",
       );
     } catch (error) {
-      const failure = { error: String(error) };
-      fs.writeFileSync(
-        path.join(
-          requestedExtensionTestRoot,
-          "product-extension-real-ui-diagnostics.json",
-        ),
-        `${JSON.stringify(failure, null, 2)}\n`,
-        { encoding: "utf8", mode: 0o600 },
+      const failure = {
+        validationPassed: false,
+        errorName: diagnosticErrorName(error),
+      };
+      writeProbeDiagnostics(
+        contents,
+        document,
+        "product-extension-real-ui-diagnostics.json",
+        failure,
       );
-      throw error;
+      throw new Error("The real product extension UI probe failed");
     }
     const cloudStored = await waitForThreadColorScopePersistence(
       "cloud",
@@ -1519,20 +1845,19 @@ function initialize() {
         },
       },
     };
-    fs.writeFileSync(
-      path.join(
-        requestedExtensionTestRoot,
-        "product-extension-real-ui-diagnostics.json",
-      ),
-      `${JSON.stringify(complete, null, 2)}\n`,
-      { encoding: "utf8", mode: 0o600 },
+    const safeComplete = sanitizeProductExtensionRealUiDiagnostics(complete);
+    writeProbeDiagnostics(
+      contents,
+      document,
+      "product-extension-real-ui-diagnostics.json",
+      safeComplete,
     );
-    if (!productExtensionRealUiDiagnosticsReady(complete)) {
+    if (!safeComplete.validationPassed) {
       throw new Error(
-        `Real product extension UI interactions failed: ${JSON.stringify(complete)}`,
+        `Real product extension UI interactions failed: ${JSON.stringify(safeComplete)}`,
       );
     }
-    return complete;
+    return safeComplete;
   }
 
   function digestFile(file) {
@@ -1667,12 +1992,11 @@ ${code}
             reactFiberElements: elements.filter((element) =>
               Object.keys(element).some((key) => key.startsWith("__reactFiber$")),
             ).length,
-            text: (document.body?.innerText ?? "").slice(0, 500),
           };
         })()`);
         throw new Error(
           nativeBindingError
-            ? `The exact native binding did not initialize: ${nativeBindingError}; document=${JSON.stringify(documentState)}`
+            ? `The exact native binding reported an error; document=${JSON.stringify(documentState)}`
             : `The exact native binding did not initialize; document=${JSON.stringify(documentState)}`,
         );
       }
@@ -1683,11 +2007,14 @@ ${code}
       );
       if (!runtimeReady) throw new Error("The v5 renderer host did not initialize");
     } catch (error) {
+      if (!isCurrentRendererDocument(rendererLifecycle, contents, document)) {
+        return;
+      }
       log("renderer-host-injection-failed", {
         webContentsId: contents.id,
         documentId: document.id,
-        url,
-        error: String(error),
+        appPage: typeof url === "string" && url.startsWith("app:"),
+        errorName: diagnosticErrorName(error),
       });
       return;
     }
@@ -1705,23 +2032,29 @@ ${code}
           packageDirectory: entry.extension.packageDirectory,
         });
       } catch (error) {
+        if (!isCurrentRendererDocument(rendererLifecycle, contents, document)) {
+          return;
+        }
         log("renderer-entry-registration-failed", {
           id: entry.extension.id,
           phase: entry.phase,
           webContentsId: contents.id,
           documentId: document.id,
-          error: String(error),
+          errorName: diagnosticErrorName(error),
         });
       }
     }
-    const primaryUiDocument =
-      uiSurfaceProbeRequested || productExtensionRealUiProbeRequested
-        ? await waitForPrimaryUiDocument(contents, document)
-        : false;
-    if (
-      richContentProbeRequested &&
-      richContentProbeClaim.claim(document.id)
-    ) {
+    const primaryUiDocument = liveProbeSuiteRequested
+      ? await waitForPrimaryUiDocument(contents, document)
+      : false;
+    if (!isCurrentRendererDocument(rendererLifecycle, contents, document)) {
+      return;
+    }
+    const ownsLiveProbeSuite = liveProbeSuiteClaim.claim(
+      document.id,
+      primaryUiDocument,
+    );
+    if (richContentProbeRequested && ownsLiveProbeSuite) {
       const probeDocument = Object.freeze({
         rendererDocumentId: document.id,
         eventFile: richMessageProbeEventFile(document.id),
@@ -1793,7 +2126,9 @@ ${code}
           interactions,
           stage: "interacted",
         };
-        writeRichContentDiagnostics(
+        writeProbeDiagnostics(
+          contents,
+          document,
           "rich-content-interaction-diagnostics.json",
           { interactions },
         );
@@ -1802,7 +2137,9 @@ ${code}
             `The rich-content controls did not activate: ${JSON.stringify(interactions)}`,
           );
         }
-        writeRichContentDiagnostics(
+        writeProbeDiagnostics(
+          contents,
+          document,
           "rich-content-diagnostics.json",
           diagnostics,
         );
@@ -1811,14 +2148,32 @@ ${code}
           documentId: document.id,
           diagnostics,
         });
-        startRichContentProbeUnmountPoller(
+        const unmountCompletion = startRichContentProbeUnmountPoller(
           contents,
           document,
           diagnostics,
         );
+        if (
+          !(await probeCompletionAllowsContinuation(
+            unmountCompletion,
+            rendererLifecycle,
+            contents,
+            document,
+          ))
+        ) {
+          return;
+        }
       } catch (error) {
-        diagnostics = { ...diagnostics, error: String(error) };
-        writeRichContentDiagnostics(
+        if (!isCurrentRendererDocument(rendererLifecycle, contents, document)) {
+          return;
+        }
+        diagnostics = {
+          ...diagnostics,
+          errorName: diagnosticErrorName(error),
+        };
+        writeProbeDiagnostics(
+          contents,
+          document,
           "rich-content-diagnostics.json",
           diagnostics,
         );
@@ -1826,7 +2181,7 @@ ${code}
           webContentsId: contents.id,
           documentId: document.id,
           diagnostics,
-          error: String(error),
+          errorName: diagnosticErrorName(error),
         });
         throw error;
       }
@@ -1834,14 +2189,11 @@ ${code}
       log("rich-content-probe-skipped", {
         webContentsId: contents.id,
         documentId: document.id,
-        claimedDocumentId: richContentProbeClaim.current(),
+        primaryUiDocument,
+        claimedDocumentId: liveProbeSuiteClaim.current(),
       });
     }
-    if (
-      uiSurfaceProbeRequested &&
-      primaryUiDocument &&
-      uiSurfaceProbeClaim.claim(document.id)
-    ) {
+    if (uiSurfaceProbeRequested && ownsLiveProbeSuite) {
       try {
         const diagnostics = await interactWithUiSurfaceProbe(contents, document);
         log("ui-surface-probe-passed", {
@@ -1850,10 +2202,13 @@ ${code}
           diagnostics,
         });
       } catch (error) {
+        if (!isCurrentRendererDocument(rendererLifecycle, contents, document)) {
+          return;
+        }
         log("ui-surface-probe-failed", {
           webContentsId: contents.id,
           documentId: document.id,
-          error: String(error),
+          errorName: diagnosticErrorName(error),
         });
         throw error;
       }
@@ -1862,25 +2217,28 @@ ${code}
         webContentsId: contents.id,
         documentId: document.id,
         primaryUiDocument,
-        claimedDocumentId: uiSurfaceProbeClaim.current(),
+        claimedDocumentId: liveProbeSuiteClaim.current(),
       });
     }
-    if (
-      productExtensionProbeRequested &&
-      productExtensionProbeClaim.claim(document.id)
-    ) {
+    if (productExtensionProbeRequested && ownsLiveProbeSuite) {
       try {
-        const diagnostics = await interactWithProductExtensions(contents);
+        const diagnostics = await interactWithProductExtensions(
+          contents,
+          document,
+        );
         log("product-extension-probe-passed", {
           webContentsId: contents.id,
           documentId: document.id,
           diagnostics,
         });
       } catch (error) {
+        if (!isCurrentRendererDocument(rendererLifecycle, contents, document)) {
+          return;
+        }
         log("product-extension-probe-failed", {
           webContentsId: contents.id,
           documentId: document.id,
-          error: String(error),
+          errorName: diagnosticErrorName(error),
         });
         throw error;
       }
@@ -1888,26 +2246,29 @@ ${code}
       log("product-extension-probe-skipped", {
         webContentsId: contents.id,
         documentId: document.id,
-        claimedDocumentId: productExtensionProbeClaim.current(),
+        primaryUiDocument,
+        claimedDocumentId: liveProbeSuiteClaim.current(),
       });
     }
-    if (
-      productExtensionRealUiProbeRequested &&
-      primaryUiDocument &&
-      productExtensionRealUiProbeClaim.claim(document.id)
-    ) {
+    if (productExtensionRealUiProbeRequested && ownsLiveProbeSuite) {
       try {
-        const diagnostics = await interactWithProductExtensionsRealUi(contents);
+        const diagnostics = await interactWithProductExtensionsRealUi(
+          contents,
+          document,
+        );
         log("product-extension-real-ui-probe-passed", {
           webContentsId: contents.id,
           documentId: document.id,
           diagnostics,
         });
       } catch (error) {
+        if (!isCurrentRendererDocument(rendererLifecycle, contents, document)) {
+          return;
+        }
         log("product-extension-real-ui-probe-failed", {
           webContentsId: contents.id,
           documentId: document.id,
-          error: String(error),
+          errorName: diagnosticErrorName(error),
         });
         throw error;
       }
@@ -1916,11 +2277,11 @@ ${code}
         webContentsId: contents.id,
         documentId: document.id,
         primaryUiDocument,
-        claimedDocumentId: productExtensionRealUiProbeClaim.current(),
+        claimedDocumentId: liveProbeSuiteClaim.current(),
       });
     }
     log("renderer-injected", {
-      url,
+      appPage: typeof url === "string" && url.startsWith("app:"),
       webContentsId: contents.id,
       documentId: document.id,
       entries: entries.map((entry) => `${entry.extension.id}:${entry.phase}`),
@@ -1936,7 +2297,9 @@ ${code}
     try {
       electronWrapper = patchElectron(loaded) ?? undefined;
     } catch (error) {
-      log("electron-patch-failed", { error: String(error) });
+      log("electron-patch-failed", {
+        errorName: diagnosticErrorName(error),
+      });
     }
     return electronWrapper ?? loaded;
   };
@@ -1967,7 +2330,9 @@ ${code}
       }
       log("exact-build-verified", { version, build, asarDigest });
     } catch (error) {
-      log("exact-build-mismatch", { error: String(error) });
+      log("exact-build-mismatch", {
+        errorName: diagnosticErrorName(error),
+      });
       return undefined;
     }
 
@@ -1990,13 +2355,13 @@ ${code}
       },
       disconnect(documentId) {
         stopRichContentProbePoller(documentId);
-        richContentProbeClaim.release(documentId);
+        liveProbeSuiteClaim.release(documentId);
         mainHost?.rendererDisconnected?.(documentId);
       },
       onError(phase, contents, error) {
         log(`renderer-channel-${phase}-failed`, {
           webContentsId: contents.id,
-          error: String(error),
+          errorName: diagnosticErrorName(error),
         });
       },
     });
@@ -2009,9 +2374,13 @@ ${code}
       return url;
     }
 
-    function senderDocument(event) {
-      const url = appSender(event);
-      return rendererLifecycle.documentFor(event.sender, url);
+    function senderDocument(event, documentId) {
+      appSender(event);
+      return requireCurrentRendererDocument(
+        rendererLifecycle,
+        event.sender,
+        documentId,
+      );
     }
 
     function selectedExtension(extensionId) {
@@ -2099,18 +2468,30 @@ ${code}
         event.returnValue = null;
       }
     });
-    ipcMain.on("chatgptx:v5:renderer-bootstrap-error", (event, error) => {
-      try {
-        const url = appSender(event);
-        log("renderer-bootstrap-error", { url, error: String(error) });
-      } catch {}
-    });
+    ipcMain.on(
+      "chatgptx:v5:renderer-bootstrap-error",
+      (event, documentId, error) => {
+        try {
+          const url = appSender(event);
+          if (
+            typeof documentId !== "string" ||
+            !rendererLifecycle.isCurrent(event.sender, documentId)
+          ) {
+            return;
+          }
+          log("renderer-bootstrap-error", {
+            appPage: typeof url === "string" && url.startsWith("app:"),
+            errorName: diagnosticErrorName(error),
+          });
+        } catch {}
+      },
+    );
     ipcMain.on("chatgptx:v5:renderer-pagehide", (event, documentId) => {
       rendererLifecycle.pageHidden(event.sender, documentId);
     });
 
     ipcMain.handle("chatgptx:v5:runtime", async (event, request) => {
-      appSender(event);
+      const document = senderDocument(event, request?.documentId);
       const method = request?.method;
       const parameters = request?.parameters ?? {};
       const extensionId = parameters.extensionId;
@@ -2141,11 +2522,10 @@ ${code}
           );
         case "runtime.info": {
           const extension = selectedExtension(extensionId);
-          return runtimeInfo(extension, senderDocument(event));
+          return runtimeInfo(extension, document);
         }
         case "renderer-entry.report": {
           const extension = selectedExtension(extensionId);
-          const document = senderDocument(event);
           const key = `${document.id}:${extension.id}:${parameters.phase}`;
           activationReports.set(key, parameters.status);
           log("renderer-entry-activation", {
@@ -2154,7 +2534,7 @@ ${code}
             status: parameters.status,
             webContentsId: event.sender.id,
             documentId: document.id,
-            ...(parameters.error ? { error: String(parameters.error) } : {}),
+            ...(parameters.error ? { errorName: "Error" } : {}),
           });
           return null;
         }
@@ -2163,7 +2543,7 @@ ${code}
             return mainHost.handleRendererRequest(
               method,
               parameters,
-              senderDocument(event),
+              document,
               event.sender,
             );
           }
@@ -2210,8 +2590,15 @@ ${code}
               .digest("hex"),
             onError(error, detail) {
               log("main-extension-error", {
-                ...detail,
-                error: String(error?.stack ?? error),
+                extensionId:
+                  typeof detail?.extensionId === "string"
+                    ? detail.extensionId
+                    : "invalid-extension",
+                phase:
+                  typeof detail?.phase === "string"
+                    ? detail.phase
+                    : "unknown",
+                errorName: diagnosticErrorName(error),
               });
             },
             sendRendererEvent(rendererId, message) {
@@ -2221,7 +2608,9 @@ ${code}
           });
         }
       } catch (error) {
-        log("main-extension-host-failed", { error: String(error) });
+        log("main-extension-host-failed", {
+          errorName: diagnosticErrorName(error),
+        });
       }
 
       startRendererLifecycle({
@@ -2232,9 +2621,13 @@ ${code}
           ? { activateMain: () => mainHost.activate() }
           : {}),
         onActivated: (results) =>
-          log("main-extensions-activated", { results }),
+          log("main-extensions-activated", {
+            results: safeMainActivationResults(results),
+          }),
         onActivationError: (error) =>
-          log("main-extension-host-failed", { error: String(error) }),
+          log("main-extension-host-failed", {
+            errorName: diagnosticErrorName(error),
+          }),
       });
     });
 
@@ -2242,7 +2635,9 @@ ${code}
       try {
         mainHost?.shutdown?.();
       } catch (error) {
-        log("main-extension-shutdown-failed", { error: String(error) });
+        log("main-extension-shutdown-failed", {
+          errorName: diagnosticErrorName(error),
+        });
       }
     });
 
@@ -2288,12 +2683,17 @@ ${code}
 }
 
 module.exports = Object.freeze({
-  createSingleDocumentClaim,
+  createPrimaryDocumentClaim,
   createRendererLifecycle,
+  isCurrentRendererDocument,
+  probeCompletionAllowsContinuation,
+  requireCurrentRendererDocument,
   rendererHostReadyExpression,
   productExtensionDiagnosticsReady,
   productExtensionRealUiDiagnosticsReady,
+  sanitizeProductExtensionRealUiDiagnostics,
   richContentFallbacksReady,
+  richContentFullyUnmounted,
   richContentInteractionsReady,
   richContentOwnersReady,
   richContentRegistrationsReady,
@@ -2301,4 +2701,5 @@ module.exports = Object.freeze({
   richMessageProbeEventFile,
   startRendererLifecycle,
   uiSurfaceProbeEventFile,
+  writeCurrentRendererDocumentDiagnostics,
 });

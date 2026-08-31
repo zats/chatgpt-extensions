@@ -12,12 +12,21 @@ import {
   assertProductExtensionRealUiDiagnostics,
   assertUiSurfaceDiagnostics,
   assertUiSurfaceEvents,
-  createGateCodexHome,
   parseLaunchArguments,
+  resolveIsolatedGateCodexHome,
+  safeGateFailure,
   seedGateThreads,
+  summarizeNativeMainEvidence,
+  summarizeGateRuntimeEvents,
+  summarizeRichProbeEventSequence,
+  summarizeProductExtensionEvidence,
+  summarizeProductExtensionRealUiEvidence,
+  summarizeUiSurfaceEvidence,
+  uiSurfaceDiagnosticFailureCode,
 } from "./start.mjs";
 import {
   bootstrapFile,
+  assertNoChatGptXProcess,
   createLaunchConfiguration,
   inspectChatGptApp,
   ownedRuntimeProcesses,
@@ -29,6 +38,69 @@ import {
 } from "./runtime-launch.mjs";
 
 const repositoryRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+
+test("public gate evidence uses strict allowlists", () => {
+  const privateValue = "PrivateThreadTitle123";
+  const evidence = {
+    native: summarizeNativeMainEvidence({
+      channel: {
+        connectedRenderers: [{ url: privateValue }],
+        rendererToMainInvokes: [privateValue],
+      },
+    }),
+    ui: summarizeUiSurfaceEvidence(
+      { results: [{ label: privateValue }] },
+      { events: [{ value: privateValue }] },
+    ),
+    product: summarizeProductExtensionEvidence({ selectedText: privateValue }),
+    productReal: summarizeProductExtensionRealUiEvidence({
+      thread: { title: privateValue },
+    }),
+    failure: safeGateFailure("ui-surface-live-interactions", {
+      name: privateValue,
+      message: privateValue,
+      stack: privateValue,
+    }),
+  };
+  assert.doesNotMatch(JSON.stringify(evidence), new RegExp(privateValue));
+  assert.deepEqual(Object.keys(evidence.native).sort(), [
+    "broadcastEvent",
+    "cancellationObserved",
+    "rendererConnections",
+    "rendererInvocations",
+    "resourcesReleased",
+    "targetedEvent",
+    "verified",
+  ]);
+  assert.deepEqual(evidence.failure, {
+    code: "ui-surface-live-interactions",
+    errorName: "Error",
+  });
+  assert.throws(
+    () => safeGateFailure("private-thread-title", new Error(privateValue)),
+    /not allowlisted/,
+  );
+  assert.deepEqual(
+    summarizeGateRuntimeEvents([
+      { event: "renderer-injected", title: privateValue },
+      { event: "renderer-injected", title: privateValue },
+      { event: "rich-content-probe-skipped", threadId: privateValue },
+      { event: privateValue },
+    ]),
+    {
+      "renderer-injected": 2,
+      "rich-content-probe-skipped": 1,
+    },
+  );
+  assert.deepEqual(
+    summarizeRichProbeEventSequence([
+      { name: "extension.activate", title: privateValue },
+      { name: privateValue },
+      { name: "conversation-item.dispose", threadId: privateValue },
+    ]),
+    ["extension.activate", "conversation-item.dispose"],
+  );
+});
 
 function createTestApp(root, bundleIdentifier) {
   const app = path.join(root, "ChatGPT.app");
@@ -335,6 +407,14 @@ test("the real product gate rejects synthetic and incomplete DOM evidence", () =
       }),
     /Real product extension UI diagnostics are incomplete/,
   );
+  assert.throws(
+    () =>
+      assertProductExtensionRealUiDiagnostics({
+        validationPassed: false,
+        realDom: true,
+      }),
+    /Real product extension UI diagnostics are incomplete/,
+  );
 });
 
 test("the UI gate requires each composer slot in its first-party state", () => {
@@ -413,6 +493,35 @@ test("the UI gate requires each composer slot in its first-party state", () => {
     eventFile: "events-document_test.json",
   };
   assert.doesNotThrow(() => assertUiSurfaceDiagnostics(diagnostics));
+  assert.equal(
+    uiSurfaceDiagnosticFailureCode({
+      ...diagnostics,
+      results: results.map((result) =>
+        result.name === "suggestion" ? { ...result, found: false } : result,
+      ),
+    }),
+    "ui-surface-suggestion",
+  );
+  assert.equal(
+    uiSurfaceDiagnosticFailureCode({
+      ...diagnostics,
+      states: {
+        ...states,
+        thread: { ...states.thread, threadRowFound: false },
+      },
+    }),
+    "ui-surface-thread-row",
+  );
+  assert.equal(
+    uiSurfaceDiagnosticFailureCode({
+      ...diagnostics,
+      states: {
+        ...states,
+        thread: { ...states.thread, missingRenders: ["composer.attachments"] },
+      },
+    }),
+    "ui-surface-thread-composer",
+  );
   assert.throws(
     () =>
       assertUiSurfaceDiagnostics({
@@ -534,23 +643,25 @@ test("launch environment contains only the direct v5 preload injection", () => {
   assert.equal(environment.NODE_PATH, undefined);
 });
 
-test("the gate copies only private auth and seeds two isolated threads", () => {
+test("the gate uses only a marked isolated CODEX_HOME and seeds two threads", () => {
   const root = fs.mkdtempSync(path.join("/tmp", "chatgpt-gate-codex-home."));
   try {
     const source = path.join(root, "source");
-    const session = path.join(root, "session");
     fs.mkdirSync(source, { mode: 0o700 });
-    fs.mkdirSync(session, { mode: 0o700 });
     fs.writeFileSync(path.join(source, "auth.json"), '{"test":true}\n', {
       mode: 0o600,
     });
-    fs.writeFileSync(path.join(source, "unrelated.json"), "do not copy\n");
-    const codexHome = createGateCodexHome(source, session);
+    fs.writeFileSync(
+      path.join(source, ".chatgpt-extensions-isolated-live-gate"),
+      "",
+      { mode: 0o600 },
+    );
+    const codexHome = resolveIsolatedGateCodexHome(source);
     assert.equal(
       fs.readFileSync(path.join(codexHome, "auth.json"), "utf8"),
       '{"test":true}\n',
     );
-    assert.equal(fs.existsSync(path.join(codexHome, "unrelated.json")), false);
+    assert.equal(codexHome, fs.realpathSync(source));
     assert.equal(fs.statSync(path.join(codexHome, "auth.json")).mode & 0o077, 0);
 
     const stateFile = path.join(codexHome, "state_5.sqlite");
@@ -594,7 +705,54 @@ test("the gate copies only private auth and seeds two isolated threads", () => {
         true,
       );
     }
-    assert.equal(fs.existsSync(path.join(source, "state_5.sqlite")), false);
+    assert.equal(fs.existsSync(path.join(source, "state_5.sqlite")), true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the gate rejects an unmarked or malformed isolated CODEX_HOME", () => {
+  const root = fs.mkdtempSync(path.join("/tmp", "chatgpt-gate-codex-rejection."));
+  try {
+    const source = path.join(root, "source");
+    fs.mkdirSync(source, { mode: 0o700 });
+    fs.writeFileSync(path.join(source, "auth.json"), '{"safe":true}\n', {
+      mode: 0o600,
+    });
+    assert.throws(
+      () => resolveIsolatedGateCodexHome(source),
+      /ENOENT/,
+    );
+
+    const marker = path.join(
+      source,
+      ".chatgpt-extensions-isolated-live-gate",
+    );
+    fs.symlinkSync(path.join(source, "auth.json"), marker);
+    assert.throws(
+      () => resolveIsolatedGateCodexHome(source),
+      /isolated owned directory/,
+    );
+
+    fs.unlinkSync(marker);
+    fs.writeFileSync(marker, "", { mode: 0o600 });
+    fs.writeFileSync(path.join(source, "auth.json"), "not-json\n", {
+      mode: 0o600,
+    });
+    assert.throws(
+      () => resolveIsolatedGateCodexHome(source),
+      /valid JSON/,
+    );
+
+    fs.writeFileSync(
+      path.join(source, "auth.json"),
+      Buffer.alloc(1024 * 1024 + 1),
+      { mode: 0o600 },
+    );
+    assert.throws(
+      () => resolveIsolatedGateCodexHome(source),
+      /private regular file/,
+    );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -656,6 +814,31 @@ test("status and stop ownership requires both the exact app bundle and profile",
     },
   ];
   assert.deepEqual(ownedRuntimeProcesses(metadata, rows), [rows[0]]);
+});
+
+test("the direct gate rejects any running ChatGPTX executable", () => {
+  assert.doesNotThrow(() =>
+    assertNoChatGptXProcess([
+      {
+        pid: 1,
+        processGroupId: 1,
+        command: "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT",
+      },
+    ]),
+  );
+  for (const command of [
+    "/Applications/ChatGPTX.app/Contents/MacOS/ChatGPTX",
+    "/private/var/folders/AppTranslocation/ChatGPTX.app/Contents/MacOS/ChatGPTX --flag",
+    "/Applications/Renamed.app/Contents/MacOS/ChatGPTX --flag",
+  ]) {
+    assert.throws(
+      () =>
+        assertNoChatGptXProcess([
+          { pid: 9, processGroupId: 9, command },
+        ]),
+      /ChatGPTX is running \(9\)/,
+    );
+  }
 });
 
 test("activation waits for both renderer phases and main entries", async () => {

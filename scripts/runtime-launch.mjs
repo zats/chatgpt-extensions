@@ -23,6 +23,8 @@ const bindingRegistry = require(
 const stockBundleIdentifier = "com.openai.codex";
 const stockTeamIdentifier = "2DC432GLL2";
 const macVerificationTimeoutMilliseconds = 30_000;
+const maximumDiagnosticJsonBytes = 10 * 1024 * 1024;
+const maximumMetadataJsonBytes = 1024 * 1024;
 
 export const runtimeFailureEventNames = new Set([
   "launch-configuration-invalid",
@@ -53,6 +55,23 @@ function plistValue(infoFile, key) {
 
 export function sha256File(file) {
   return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+}
+
+export function readBoundedJsonFile(
+  file,
+  maximumBytes = maximumDiagnosticJsonBytes,
+) {
+  const status = fs.lstatSync(file);
+  if (!status.isFile() || status.isSymbolicLink()) {
+    throw new TypeError("JSON evidence must be a regular file");
+  }
+  if (status.size < 1) {
+    throw new SyntaxError("JSON evidence is empty");
+  }
+  if (status.size > maximumBytes) {
+    throw new RangeError("JSON evidence exceeds its size limit");
+  }
+  return JSON.parse(fs.readFileSync(file, "utf8"));
 }
 
 function runMacVerification(executable, arguments_) {
@@ -281,7 +300,7 @@ export function processRows() {
 
 export function assertNoChatGptXProcess(rows = processRows()) {
   const conflicts = rows.filter((row) =>
-    row.command.includes("/ChatGPTX.app/Contents/MacOS/ChatGPTX"),
+    /\/Contents\/MacOS\/ChatGPTX(?:\s|$)/.test(row.command),
   );
   if (conflicts.length > 0) {
     throw new Error(
@@ -338,7 +357,16 @@ export function readRuntimeRecords(logDirectory) {
   const records = [];
   if (!fs.existsSync(logDirectory)) return records;
   for (const name of fs.readdirSync(logDirectory).filter((value) => value.endsWith(".jsonl"))) {
-    for (const line of fs.readFileSync(path.join(logDirectory, name), "utf8").split("\n")) {
+    const file = path.join(logDirectory, name);
+    const status = fs.lstatSync(file);
+    if (
+      !status.isFile() ||
+      status.isSymbolicLink() ||
+      status.size > maximumDiagnosticJsonBytes
+    ) {
+      throw new RangeError("Runtime log exceeds its size limit");
+    }
+    for (const line of fs.readFileSync(file, "utf8").split("\n")) {
       if (line) records.push(JSON.parse(line));
     }
   }
@@ -369,8 +397,9 @@ export function readSession(session) {
     throw new Error("Session path must be absolute");
   }
   const directory = fs.realpathSync(session);
-  const metadata = JSON.parse(
-    fs.readFileSync(path.join(directory, sessionMarkerFile), "utf8"),
+  const metadata = readBoundedJsonFile(
+    path.join(directory, sessionMarkerFile),
+    maximumMetadataJsonBytes,
   );
   if (
     metadata?.schemaVersion !== 1 ||
@@ -452,7 +481,8 @@ export async function waitForActivation(metadata, identities, timeoutMillisecond
     const records = readRuntimeRecords(metadata.logDirectory);
     const failures = runtimeFailures(records);
     if (failures.length > 0) {
-      throw new Error(`Runtime launch failed: ${JSON.stringify(failures)}`);
+      const events = [...new Set(failures.map((record) => record.event))].sort();
+      throw new Error(`Runtime launch failed with events: ${events.join(", ")}`);
     }
     exactBuildRecord ??= records.find((record) => record.event === "exact-build-verified");
     for (const record of records) {
@@ -486,8 +516,9 @@ export async function waitForJson(file, description, timeoutMilliseconds = 15_00
   let lastError;
   while (Date.now() < deadline) {
     try {
-      return JSON.parse(fs.readFileSync(file, "utf8"));
+      return readBoundedJsonFile(file);
     } catch (error) {
+      if (error instanceof RangeError) throw error;
       lastError = error;
     }
     await sleep(100);

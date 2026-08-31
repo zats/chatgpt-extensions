@@ -10,18 +10,37 @@ const PAGEHIDE_CHANNEL = "chatgptx:v5:renderer-pagehide";
 const bootstrap = process.isMainFrame
   ? ipcRenderer.sendSync(BOOTSTRAP_CHANNEL)
   : null;
+const rendererDocumentId =
+  typeof bootstrap?.document?.id === "string" &&
+  bootstrap.document.id.length > 0
+    ? bootstrap.document.id
+    : undefined;
 const listeners = new Map();
 let pageHidden = false;
 
+function requireActiveRendererDocumentId() {
+  if (pageHidden) {
+    throw new Error("The renderer document is no longer active");
+  }
+  if (!rendererDocumentId) {
+    throw new Error("The renderer document is unavailable");
+  }
+  return rendererDocumentId;
+}
+
 function reportError(error) {
-  ipcRenderer.send(BOOTSTRAP_ERROR_CHANNEL, String(error));
+  ipcRenderer.send(
+    BOOTSTRAP_ERROR_CHANNEL,
+    rendererDocumentId ?? null,
+    String(error),
+  );
 }
 
 function deactivatePage() {
   if (pageHidden) return;
   pageHidden = true;
   listeners.clear();
-  ipcRenderer.send(PAGEHIDE_CHANNEL, bootstrap?.document?.id ?? null);
+  ipcRenderer.send(PAGEHIDE_CHANNEL, rendererDocumentId ?? null);
   try {
     void webFrame
       .executeJavaScript(
@@ -38,6 +57,7 @@ if (process.isMainFrame) {
 }
 
 ipcRenderer.on(MAIN_EVENT_CHANNEL, (_event, message) => {
+  if (pageHidden || !rendererDocumentId) return;
   if (!message || typeof message !== "object") return;
   const key = `${message.extensionId}:${message.event}`;
   for (const listener of listeners.get(key) ?? []) {
@@ -54,7 +74,17 @@ contextBridge.exposeInMainWorld(
   Object.freeze({
     document: bootstrap?.document ?? null,
     request(method, parameters = {}) {
-      return ipcRenderer.invoke("chatgptx:v5:runtime", { method, parameters });
+      let documentId;
+      try {
+        documentId = requireActiveRendererDocumentId();
+      } catch (error) {
+        return Promise.reject(error);
+      }
+      return ipcRenderer.invoke("chatgptx:v5:runtime", {
+        documentId,
+        method,
+        parameters,
+      });
     },
     subscribe(extensionId, event, listener) {
       if (
@@ -64,6 +94,7 @@ contextBridge.exposeInMainWorld(
       ) {
         throw new TypeError("Invalid main-channel subscription");
       }
+      requireActiveRendererDocumentId();
       const key = `${extensionId}:${event}`;
       const values = listeners.get(key) ?? new Set();
       values.add(listener);

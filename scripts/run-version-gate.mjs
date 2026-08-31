@@ -1,11 +1,15 @@
 #!/usr/bin/env node
 
-import { chmod, mkdtemp, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { runOwnedCommand } from "./owned-process.mjs";
+import {
+  richProbeDisposalEvents,
+  richProbeInteractionEvents,
+} from "./rich-message-gate.mjs";
 
 const repositoryRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const requiredLiveGates = Object.freeze([
@@ -27,6 +31,199 @@ const defaultExtensionDirectories = Object.freeze([
   "test-fixtures/ui-surface-probe/dist",
   "test-fixtures/rich-message-probe/dist",
 ]);
+const safeErrorNames = new Set([
+  "AbortError",
+  "AggregateError",
+  "Error",
+  "RangeError",
+  "ReferenceError",
+  "SyntaxError",
+  "TimeoutError",
+  "TypeError",
+  "URIError",
+]);
+const safeLauncherFailureCodes = new Set([
+  "deterministic-thread-fixture",
+  "exact-binding",
+  "extension-activation",
+  "native-main-live-probe",
+  "no-runtime-failures",
+  "product-extension-live-interactions",
+  "product-extension-real-ui-interactions",
+  "remove-gate-session",
+  "rich-message-diagnostics",
+  "rich-message-events",
+  "rich-message-live-interactions",
+  "rich-message-unmount-diagnostics",
+  "rich-message-unmount-events",
+  "run-gate",
+  "stock-profile-warmup",
+  "stop-owned-processes",
+  "ui-surface-live-interactions",
+  "ui-surface-diagnostics",
+  "ui-surface-events",
+  "ui-surface-suggestion",
+  "ui-surface-announcement",
+  "ui-surface-sidebar",
+  "ui-surface-product-menu",
+  "ui-surface-home-composer",
+  "ui-surface-thread-row",
+  "ui-surface-thread-composer",
+]);
+const safeRuntimeEventNames = Object.freeze([
+  "electron-intercepted",
+  "exact-build-verified",
+  "main-extension-host-failed",
+  "main-extensions-activated",
+  "product-extension-probe-failed",
+  "product-extension-probe-passed",
+  "product-extension-probe-skipped",
+  "product-extension-real-ui-probe-failed",
+  "product-extension-real-ui-probe-passed",
+  "product-extension-real-ui-probe-skipped",
+  "renderer-bootstrap-error",
+  "renderer-channel-connect-failed",
+  "renderer-channel-disconnect-failed",
+  "renderer-channel-inject-failed",
+  "renderer-entry-registered",
+  "renderer-entry-registration-failed",
+  "renderer-host-injection-failed",
+  "renderer-injected",
+  "rich-content-probe-failed",
+  "rich-content-probe-mounted",
+  "rich-content-probe-skipped",
+  "rich-content-probe-unmount-failed",
+  "rich-content-probe-unmounted",
+  "runtime-loaded",
+  "ui-surface-probe-failed",
+  "ui-surface-probe-passed",
+  "ui-surface-probe-skipped",
+]);
+const safeRichProbeEventNames = new Set([
+  ...richProbeInteractionEvents,
+  ...richProbeDisposalEvents,
+]);
+const maximumDiagnosticJsonBytes = 10 * 1024 * 1024;
+const maximumMetadataJsonBytes = 1024 * 1024;
+
+async function readBoundedJsonFile(file, maximumBytes) {
+  const status = await lstat(file);
+  if (!status.isFile() || status.isSymbolicLink()) {
+    throw new TypeError("JSON input must be a regular file");
+  }
+  if (status.size < 1 || status.size > maximumBytes) {
+    throw new RangeError("JSON input exceeds its size limit");
+  }
+  return JSON.parse(await readFile(file, "utf8"));
+}
+
+function safeErrorName(error) {
+  const name = typeof error?.name === "string" ? error.name : "Error";
+  return safeErrorNames.has(name) ? name : "Error";
+}
+
+function allowedLauncherGateNames(expectations = {}) {
+  return Object.freeze([
+    ...requiredLiveGates,
+    ...(expectations.activationGates ?? []),
+  ]);
+}
+
+function safeRuntimeEventCounts(value) {
+  return Object.freeze(
+    Object.fromEntries(
+      safeRuntimeEventNames.flatMap((name) => {
+        const count = value?.[name];
+        return Number.isSafeInteger(count) && count > 0
+          ? [[name, count]]
+          : [];
+      }),
+    ),
+  );
+}
+
+function safeRichProbeEventSequence(value) {
+  return Object.freeze(
+    (Array.isArray(value) ? value : [])
+      .flatMap((name) =>
+        safeRichProbeEventNames.has(name) ? [name] : [],
+      )
+      .slice(0, 256),
+  );
+}
+
+function summarizedPassedGateEvidence(name, evidence, expectations) {
+  const integer = (value) => (Number.isSafeInteger(value) && value >= 0 ? value : 0);
+  const flag = (value) => value === true;
+  switch (name) {
+    case "stock-profile-warmup":
+      return Object.freeze({
+        initializedState: flag(evidence?.initializedState),
+        stopped: flag(evidence?.stopped),
+      });
+    case "deterministic-thread-fixture":
+      return Object.freeze({ count: integer(evidence?.count) });
+    case "exact-binding": {
+      const manifest = expectations?.manifest;
+      return Object.freeze({
+        appVersion: manifest?.version ?? null,
+        appBuild: manifest?.appBuild ?? null,
+        appAsarSha256: manifest?.appAsarSha256 ?? null,
+        bindingManifestSha256:
+          typeof evidence?.bindingManifestSha256 === "string" &&
+          /^[a-f0-9]{64}$/.test(evidence.bindingManifestSha256)
+            ? evidence.bindingManifestSha256
+            : null,
+        downloadLength: Number.isSafeInteger(manifest?.downloadLength)
+          ? manifest.downloadLength
+          : null,
+        downloadEdSignature: manifest?.downloadEdSignature ?? null,
+      });
+    }
+    case "native-main-live-probe":
+      return Object.freeze({
+        verified: flag(evidence?.verified),
+        rendererConnections: integer(evidence?.rendererConnections),
+        rendererInvocations: integer(evidence?.rendererInvocations),
+        targetedEvent: flag(evidence?.targetedEvent),
+        broadcastEvent: flag(evidence?.broadcastEvent),
+        cancellationObserved: flag(evidence?.cancellationObserved),
+        resourcesReleased: flag(evidence?.resourcesReleased),
+      });
+    case "rich-message-live-interactions":
+      return Object.freeze({
+        verified: flag(evidence?.verified),
+        lifecycleEvents: integer(evidence?.lifecycleEvents),
+      });
+    case "ui-surface-live-interactions":
+      return Object.freeze({
+        verified: flag(evidence?.verified),
+        interactions: integer(evidence?.interactions),
+        lifecycleEvents: integer(evidence?.lifecycleEvents),
+        homeState: flag(evidence?.homeState),
+        threadState: flag(evidence?.threadState),
+      });
+    case "product-extension-live-interactions":
+      return Object.freeze({
+        verified: flag(evidence?.verified),
+        threadColorApplied: flag(evidence?.threadColorApplied),
+        reactionApplied: flag(evidence?.reactionApplied),
+      });
+    case "product-extension-real-ui-interactions":
+      return Object.freeze({
+        verified: flag(evidence?.verified),
+        realDom: flag(evidence?.realDom),
+        headerColorApplied: flag(evidence?.headerColorApplied),
+        activityLayoutVerified: flag(evidence?.activityLayoutVerified),
+        standardLayoutVerified: flag(evidence?.standardLayoutVerified),
+        cloudLayoutVerified: flag(evidence?.cloudLayoutVerified),
+        reactionApplied: flag(evidence?.reactionApplied),
+        settingsVerified: flag(evidence?.settingsVerified),
+      });
+    default:
+      return undefined;
+  }
+}
 
 export function parseStartCommand(value) {
   if (value === undefined || value === "") {
@@ -87,6 +284,7 @@ export function assertLauncherResult(value, expectations = {}) {
   if (!Array.isArray(value.gates)) {
     throw new TypeError("Direct launcher result has no gate evidence array");
   }
+  const allowed = new Set(allowedLauncherGateNames(expectations));
   const byName = new Map();
   for (const gate of value.gates) {
     if (
@@ -94,16 +292,14 @@ export function assertLauncherResult(value, expectations = {}) {
       typeof gate !== "object" ||
       typeof gate.name !== "string" ||
       gate.status !== "passed" ||
-      byName.has(gate.name)
+      byName.has(gate.name) ||
+      !allowed.has(gate.name)
     ) {
       throw new TypeError("Direct launcher result contains a failed, duplicate, or invalid gate");
     }
     byName.set(gate.name, gate);
   }
-  const required = [
-    ...requiredLiveGates,
-    ...(expectations.activationGates ?? []),
-  ];
+  const required = allowedLauncherGateNames(expectations);
   const missing = required.filter((gate) => !byName.has(gate));
   if (missing.length > 0) {
     throw new TypeError(`Direct launcher did not pass gates: ${missing.join(", ")}`);
@@ -134,6 +330,69 @@ export function assertLauncherResult(value, expectations = {}) {
     }
   }
   return value;
+}
+
+export function summarizeLauncherResult(value, expectations = {}) {
+  const allowed = allowedLauncherGateNames(expectations);
+  const byName = new Map(
+    Array.isArray(value?.gates)
+      ? value.gates
+          .filter(
+            (gate) =>
+              gate &&
+              typeof gate === "object" &&
+              allowed.includes(gate.name) &&
+              ["passed", "failed"].includes(gate.status) &&
+              !gate.name.includes("\n"),
+          )
+          .map((gate) => [gate.name, gate])
+      : [],
+  );
+  const failureCode = safeLauncherFailureCodes.has(value?.failure?.code)
+    ? value.failure.code
+    : "launcher-gate-failed";
+  const runtimeEventCounts = safeRuntimeEventCounts(value?.runtimeEventCounts);
+  const richEventSequence = safeRichProbeEventSequence(
+    value?.richEventSequence,
+  );
+  return Object.freeze({
+    status: value?.status === "passed" ? "passed" : "failed",
+    gates: Object.freeze(
+      allowed.flatMap((name) =>
+        byName.has(name)
+          ? [
+              Object.freeze({
+                name,
+                status: byName.get(name).status,
+                ...(value?.status === "passed"
+                  ? {
+                      evidence: summarizedPassedGateEvidence(
+                        name,
+                        byName.get(name).evidence,
+                        expectations,
+                      ),
+                    }
+                  : {}),
+              }),
+            ]
+          : [],
+      ),
+    ),
+    ...(value?.status === "passed"
+      ? {}
+      : {
+          failure: Object.freeze({
+            code: failureCode,
+            errorName: safeErrorName({ name: value?.failure?.errorName }),
+          }),
+          ...(Object.keys(runtimeEventCounts).length > 0
+            ? { runtimeEventCounts }
+            : {}),
+          ...(richEventSequence.length > 0
+            ? { richEventSequence }
+            : {}),
+        }),
+  });
 }
 
 function parseArguments(argv) {
@@ -197,10 +456,19 @@ async function validateLiveInputs(options) {
   const app = await realpath(options.app);
   const binding = await realpath(options.binding);
   const codexHome = await realpath(options.codex_home);
-  const manifest = JSON.parse(await readFile(path.join(binding, "manifest.json"), "utf8"));
+  const manifest = await readBoundedJsonFile(
+    path.join(binding, "manifest.json"),
+    maximumMetadataJsonBytes,
+  );
   const authFile = path.join(codexHome, "auth.json");
-  const authStatus = await stat(authFile);
-  if (!authStatus.isFile() || (authStatus.mode & 0o077) !== 0) {
+  const authStatus = await lstat(authFile);
+  if (
+    !authStatus.isFile() ||
+    authStatus.isSymbolicLink() ||
+    authStatus.size < 1 ||
+    authStatus.size > maximumMetadataJsonBytes ||
+    (authStatus.mode & 0o077) !== 0
+  ) {
     throw new Error("Codex auth.json must be a private regular file");
   }
   const extensions = options.extensions.length
@@ -210,8 +478,9 @@ async function validateLiveInputs(options) {
   const activationGates = [];
   for (const directory of extensions) {
     const resolved = await realpath(path.resolve(repositoryRoot, directory));
-    const extensionManifest = JSON.parse(
-      await readFile(path.join(resolved, "package.json"), "utf8"),
+    const extensionManifest = await readBoundedJsonFile(
+      path.join(resolved, "package.json"),
+      maximumMetadataJsonBytes,
     );
     if (extensionManifest?.chatgptx?.main !== undefined) {
       activationGates.push(`activation:${extensionManifest.id}:main`);
@@ -261,17 +530,32 @@ async function runLiveGate(options) {
       });
     } catch (error) {
       try {
-        error.launcherResult = JSON.parse(await readFile(launcherResultFile, "utf8"));
+        error.launcherResult = summarizeLauncherResult(
+          await readBoundedJsonFile(
+            launcherResultFile,
+            maximumDiagnosticJsonBytes,
+          ),
+          { activationGates: inputs.activationGates },
+        );
       } catch {
         // The outer gate records that the launcher produced no readable result.
       }
       throw error;
     }
     const launcherResult = assertLauncherResult(
-      JSON.parse(await readFile(launcherResultFile, "utf8")),
+      await readBoundedJsonFile(
+        launcherResultFile,
+        maximumDiagnosticJsonBytes,
+      ),
       { activationGates: inputs.activationGates, manifest: inputs.manifest },
     );
-    return { inputs, launcherResult };
+    return {
+      inputs,
+      launcherResult: summarizeLauncherResult(launcherResult, {
+        activationGates: inputs.activationGates,
+        manifest: inputs.manifest,
+      }),
+    };
   } finally {
     await rm(temporary, { recursive: true, force: true });
   }
@@ -286,6 +570,13 @@ async function writeResult(file, value) {
   });
   await chmod(temporary, 0o600);
   await rename(temporary, absolute);
+}
+
+export function safeFailure(phase, error) {
+  return Object.freeze({
+    code: `${phase}-gate-failed`,
+    errorName: safeErrorName(error),
+  });
 }
 
 async function main() {
@@ -314,7 +605,7 @@ async function main() {
     process.stdout.write(`${path.resolve(options.result)}\n`);
   } catch (error) {
     result.status = "failed";
-    result.error = String(error?.stack ?? error);
+    result.failure = safeFailure(options.phase, error);
     if (error?.launcherResult !== undefined) result.launcher = error.launcherResult;
     await writeResult(options.result, result);
     throw error;
@@ -322,8 +613,8 @@ async function main() {
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
-  main().catch((error) => {
-    process.stderr.write(`${String(error?.message ?? error)}\n`);
+  main().catch(() => {
+    process.stderr.write("ChatGPT version gate failed; inspect the privacy-safe result artifact\n");
     process.exitCode = 1;
   });
 }

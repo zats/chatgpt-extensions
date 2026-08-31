@@ -564,29 +564,47 @@ jobs:
         run: |
           agent_user="cxagent${GITHUB_RUN_ID: -6}${GITHUB_RUN_ATTEMPT}"
           [[ "$agent_user" =~ ^[a-z][a-z0-9]{1,31}$ ]]
-          agent_uid=600
-          while /usr/bin/dscl . -search /Users UniqueID "$agent_uid" | /usr/bin/grep -q .; do
-            agent_uid=$((agent_uid + 1))
-          done
           agent_home="/Users/$agent_user"
-          sudo /usr/bin/dscl . -create "/Users/$agent_user"
-          sudo /usr/bin/dscl . -create "/Users/$agent_user" UserShell /bin/bash
-          sudo /usr/bin/dscl . -create "/Users/$agent_user" RealName "ChatGPT binding generator"
-          sudo /usr/bin/dscl . -create "/Users/$agent_user" UniqueID "$agent_uid"
-          sudo /usr/bin/dscl . -create "/Users/$agent_user" PrimaryGroupID 20
-          sudo /usr/bin/dscl . -create "/Users/$agent_user" NFSHomeDirectory "$agent_home"
+          if /usr/bin/dscl . -read "/Users/$agent_user" >/dev/null 2>&1 ||
+             [[ -e "$agent_home" ]]; then
+            echo "The generator account or home already exists" >&2
+            exit 1
+          fi
+          {
+            echo "user=$agent_user"
+            echo "home=$agent_home"
+          } >> "$GITHUB_OUTPUT"
+          account_password="$(/usr/bin/uuidgen | /usr/bin/tr -d '-')"
+          sudo /usr/sbin/sysadminctl -addUser "$agent_user" \
+            -fullName "ChatGPT binding generator" \
+            -GID 20 \
+            -shell /bin/bash \
+            -home "$agent_home" \
+            -password "$account_password"
+          unset account_password
+          agent_uid="$(
+            /usr/bin/dscl . -read "/Users/$agent_user" UniqueID |
+              /usr/bin/awk '$1 == "UniqueID:" && $2 ~ /^[0-9]+$/ { print $2 }'
+          )"
+          [[ "$agent_uid" =~ ^[0-9]+$ && "$agent_uid" -ge 500 ]]
+          record_home="$(
+            /usr/bin/dscl . -read "/Users/$agent_user" NFSHomeDirectory |
+              /usr/bin/awk '$1 == "NFSHomeDirectory:" { print $2 }'
+          )"
+          [[ "$record_home" == "$agent_home" ]]
+          if /usr/bin/id -Gn "$agent_user" | /usr/bin/tr ' ' '\n' | /usr/bin/grep -qx admin; then
+            echo "The generator account unexpectedly belongs to the admin group" >&2
+            exit 1
+          fi
           sudo /bin/mkdir -m 700 "$agent_home"
+          [[ -d "$agent_home" && ! -L "$agent_home" ]]
           sudo /usr/sbin/chown "$(/usr/bin/id -u):$(/usr/bin/id -g)" "$agent_home"
           if sudo -u "$agent_user" /usr/bin/sudo -n /usr/bin/true 2>/dev/null; then
             echo "The generator account unexpectedly has sudo access" >&2
             exit 1
           fi
           chmod 700 "$RUNNER_TEMP"
-          {
-            echo "user=$agent_user"
-            echo "uid=$agent_uid"
-            echo "home=$agent_home"
-          } >> "$GITHUB_OUTPUT"
+          echo "uid=$agent_uid" >> "$GITHUB_OUTPUT"
       - name: Download exact ChatGPT build
         id: chatgpt
         env:
@@ -904,7 +922,7 @@ jobs:
         env:
           AGENT_UID: ${{ steps.isolation.outputs.uid }}
         run: |
-          [[ "$AGENT_UID" =~ ^[0-9]+$ && "$AGENT_UID" -ge 600 ]]
+          [[ "$AGENT_UID" =~ ^[0-9]+$ && "$AGENT_UID" -ge 500 ]]
           sudo /usr/bin/pkill -KILL -u "$AGENT_UID" 2>/dev/null || true
           for _ in 1 2 3 4 5; do
             if ! /usr/bin/pgrep -u "$AGENT_UID" >/dev/null; then exit 0; fi
@@ -959,7 +977,7 @@ jobs:
         env:
           AGENT_UID: ${{ steps.isolation.outputs.uid }}
         run: |
-          [[ "$AGENT_UID" =~ ^[0-9]+$ && "$AGENT_UID" -ge 600 ]]
+          [[ "$AGENT_UID" =~ ^[0-9]+$ && "$AGENT_UID" -ge 500 ]]
           sudo /usr/bin/pkill -KILL -u "$AGENT_UID" 2>/dev/null || true
           for _ in 1 2 3 4 5; do
             if ! /usr/bin/pgrep -u "$AGENT_UID" >/dev/null; then exit 0; fi
@@ -1066,12 +1084,74 @@ jobs:
           AGENT_UID: ${{ steps.isolation.outputs.uid }}
           AGENT_USER: ${{ steps.isolation.outputs.user }}
         run: |
-          if [[ "$AGENT_USER" =~ ^[a-z][a-z0-9]{1,31}$ &&
-                "$AGENT_HOME" == "/Users/$AGENT_USER" &&
-                "$AGENT_UID" =~ ^[0-9]+$ && "$AGENT_UID" -ge 600 ]]; then
-            sudo /usr/bin/pkill -KILL -u "$AGENT_UID" 2>/dev/null || true
-            sudo /usr/bin/dscl . -delete "/Users/$AGENT_USER" 2>/dev/null || true
-            sudo /bin/rm -rf "$AGENT_HOME"
+          cleanup_status=0
+          cleanup_uid="$AGENT_UID"
+          account_verified=false
+          if [[ "$AGENT_UID" =~ ^[0-9]+$ && "$AGENT_UID" -ge 500 ]]; then
+            account_verified=true
+          fi
+          if [[ -z "$AGENT_USER" && -z "$AGENT_HOME" && -z "$AGENT_UID" ]]; then
+            :
+          elif [[ "$AGENT_USER" =~ ^[a-z][a-z0-9]{1,31}$ &&
+                "$AGENT_HOME" == "/Users/$AGENT_USER" ]]; then
+            if /usr/bin/dscl . -read "/Users/$AGENT_USER" >/dev/null 2>&1; then
+              cleanup_uid="$(
+                /usr/bin/dscl . -read "/Users/$AGENT_USER" UniqueID |
+                  /usr/bin/awk '$1 == "UniqueID:" && $2 ~ /^[0-9]+$/ { print $2 }'
+              )"
+            fi
+            stop_generator_processes() {
+              if [[ ! "$cleanup_uid" =~ ^[0-9]+$ || "$cleanup_uid" -lt 500 ]]; then
+                return 0
+              fi
+              for ((remaining_checks = 10; remaining_checks > 0; remaining_checks -= 1)); do
+                sudo /bin/launchctl bootout "gui/$cleanup_uid" 2>/dev/null || true
+                sudo /bin/launchctl bootout "user/$cleanup_uid" 2>/dev/null || true
+                sudo /usr/bin/pkill -KILL -u "$cleanup_uid" 2>/dev/null || true
+                if ! /usr/bin/pgrep -u "$cleanup_uid" >/dev/null; then break; fi
+                sleep 1
+              done
+              ! /usr/bin/pgrep -u "$cleanup_uid" >/dev/null
+            }
+            if /usr/bin/dscl . -read "/Users/$AGENT_USER" >/dev/null 2>&1; then
+              if [[ -d "$AGENT_HOME" && ! -L "$AGENT_HOME" ]]; then
+                sudo /usr/sbin/chown "$cleanup_uid:20" "$AGENT_HOME" || cleanup_status=1
+                sudo /bin/chmod 555 "$AGENT_HOME" || cleanup_status=1
+              fi
+              sudo /usr/sbin/sysadminctl -deleteUser "$AGENT_USER" || cleanup_status=1
+            fi
+            stop_generator_processes || cleanup_status=1
+            for ((remaining_checks = 20; remaining_checks > 0; remaining_checks -= 1)); do
+              process_present=false
+              if [[ "$cleanup_uid" =~ ^[0-9]+$ ]] &&
+                 /usr/bin/pgrep -u "$cleanup_uid" >/dev/null 2>&1; then
+                process_present=true
+              fi
+              if ! /usr/bin/dscl . -read "/Users/$AGENT_USER" >/dev/null 2>&1 &&
+                 [[ "$process_present" == false && ! -e "$AGENT_HOME" ]]; then
+                break
+              fi
+              sleep 1
+            done
+            if /usr/bin/dscl . -read "/Users/$AGENT_USER" >/dev/null 2>&1; then
+              echo "The generator account still exists after cleanup" >&2
+              cleanup_status=1
+            fi
+            if [[ "$cleanup_uid" =~ ^[0-9]+$ ]] &&
+               /usr/bin/pgrep -u "$cleanup_uid" >/dev/null 2>&1; then
+              echo "The generator account still has a process after cleanup" >&2
+              cleanup_status=1
+            fi
+            if [[ "$account_verified" != true && -e "$AGENT_HOME" ]]; then
+              sudo /usr/bin/find "$AGENT_HOME" -depth -delete || cleanup_status=1
+            fi
+            if [[ -e "$AGENT_HOME" ]]; then
+              echo "The generator home still exists after cleanup" >&2
+              cleanup_status=1
+            fi
+          else
+            echo "The generator cleanup guard rejected its account identity" >&2
+            cleanup_status=1
           fi
           rm -rf \
             "$RUNNER_TEMP/initial-agent-auth.json" \
@@ -1086,6 +1166,7 @@ jobs:
             "$RUNNER_TEMP/binding-patch-payload" \
             "$RUNNER_TEMP/patch-handoff-public.pem" \
             "$RUNNER_TEMP"/raw-binding-artifact.*
+          exit "$cleanup_status"
       - name: Require successful bounded generator outputs
         if: always()
         env:

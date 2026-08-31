@@ -124,9 +124,7 @@ export function assertRichProbeLifecycle(events, unmounted) {
       !finallyDisposed ||
       surfaceActivationIndexes.length !== 1
     ) {
-      throw new Error(
-        `The ${surface} lifecycle is incomplete: ${JSON.stringify(actualNames)}`,
-      );
+      throw new Error(`The ${surface} lifecycle is incomplete`);
     }
     const mountEvents = surfaceEvents.filter(
       (event) => event.name === `${surface}.mount`,
@@ -285,7 +283,7 @@ export function assertRichContentDiagnostics(diagnostics) {
   }
   if (missing.length > 0) {
     throw new Error(
-      `The rich-content diagnostics are incomplete (${missing.join(", ")}): ${JSON.stringify(diagnostics)}`,
+      `The rich-content diagnostics are incomplete (${missing.join(", ")})`,
     );
   }
 }
@@ -301,7 +299,7 @@ export function assertRichContentUnmountDiagnostics(diagnostics) {
   );
   if (missing.length > 0) {
     throw new Error(
-      `The rich-content unmount diagnostics are incomplete (${missing.join(", ")}): ${JSON.stringify(diagnostics)}`,
+      `The rich-content unmount diagnostics are incomplete (${missing.join(", ")})`,
     );
   }
 }

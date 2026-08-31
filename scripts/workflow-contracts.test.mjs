@@ -371,9 +371,19 @@ test("test authentication exists only after no-secret static tests and live runs
     ) < reusableLive.indexOf("Materialize private test authentication"),
   );
   const helper = await readFile(path.join(root, "scripts/run-isolated-live-gate.sh"), "utf8");
-  assert.match(helper, /dscl \. -create/);
+  assert.match(helper, /sysadminctl -addUser "\$gate_user"/);
+  assert.match(helper, /sysadminctl -deleteUser "\$gate_user"/);
+  assert.doesNotMatch(helper, /dscl \. -create/);
+  assert.doesNotMatch(helper, /dscl \. -delete/);
+  assert.match(helper, /must run as a normal administrator account/);
+  assert.match(helper, /gate_uid="\$\(read_gate_uid\)"/);
+  assert.match(helper, /chown "\$gate_uid:20" "\$gate_home"/);
+  assert.match(helper, /chmod 555 "\$gate_home"/);
   assert.match(helper, /sudo -u "\$gate_user" \/usr\/bin\/env -i/);
+  assert.match(helper, /\.chatgpt-extensions-isolated-live-gate/);
   assert.match(helper, /pkill -KILL -u "\$gate_uid"/);
+  assert.match(helper, /launchctl bootout "user\/\$gate_uid"/);
+  assert.match(helper, /launchctl bootout "gui\/\$gate_uid"/);
   assert.match(helper, /pgrep -u "\$gate_uid"/);
   assert.match(helper, /chown -R root:wheel "\$gate_home\/workspace"/);
   assert.match(
@@ -389,18 +399,86 @@ test("test authentication exists only after no-secret static tests and live runs
   const launch = helper.indexOf('"$source_root/scripts/run-owned-command.mjs"');
   assert.ok(readable >= 0 && immutable > readable && launch > immutable);
   assert.match(helper, /unexpectedly has sudo access/);
+  assert.match(helper, /unexpectedly belongs to the admin group/);
+  assert.match(helper, /output_parent.*runner_temp/);
+  assert.match(helper, /account or home already exists/);
   assert.match(helper, /sudo \/bin\/test -f/);
   assert.doesNotMatch(helper, /\/usr\/bin\/test/);
-  const resultCopy = helper.indexOf(
-    '"$gate_home/output/version-gate.json" "$result_output"',
-  );
-  const normalCleanup = helper.indexOf("trap - EXIT", resultCopy);
+  const resultCopy = helper.indexOf('/bin/mv "$staged_result" "$result_output"');
+  const normalCleanup = helper.lastIndexOf("trap - EXIT");
   const finalProcessCheck = helper.indexOf(
-    "still has a process after user removal",
-    normalCleanup,
+    "still has a process after its bounded stop",
   );
-  assert.ok(resultCopy >= 0 && normalCleanup > resultCopy && finalProcessCheck > normalCleanup);
+  const accountCheck = helper.indexOf("account still exists after cleanup", finalProcessCheck);
+  const homeCheck = helper.indexOf("home still exists after cleanup", accountCheck);
+  assert.ok(
+    resultCopy >= 0 &&
+      finalProcessCheck >= 0 &&
+      accountCheck > finalProcessCheck &&
+      homeCheck > accountCheck &&
+      resultCopy > homeCheck &&
+      normalCleanup > resultCopy,
+  );
+  const gateCompleted = helper.indexOf('gate_status="$?"');
+  const suspended = helper.indexOf("\nsuspend_gate_processes\n", gateCompleted);
+  const frozen = helper.indexOf('chflags uchg "$gate_result_source"', suspended);
+  const staged = helper.indexOf('"$gate_result_source" "$staged_result"', frozen);
+  const authValidated = helper.indexOf(
+    "refreshed isolated authentication is not a JSON object",
+    staged,
+  );
+  const accountDeleted = helper.indexOf("\ncleanup\n", staged);
+  const authCopy = helper.indexOf('/bin/mv "$staged_auth" "$auth_output"');
+  assert.ok(
+    gateCompleted >= 0 &&
+      suspended > gateCompleted &&
+      frozen > suspended &&
+      staged > frozen &&
+      authValidated > staged &&
+      accountDeleted > authValidated &&
+      resultCopy > accountDeleted &&
+      authCopy > accountDeleted,
+  );
+  assert.match(helper, /pkill -STOP -u "\$gate_uid"/);
+  assert.ok(
+    helper.indexOf('pgrep -u "$gate_uid"', helper.indexOf("suspend_gate_processes")) <
+      helper.indexOf('ps -o stat= -U "$gate_uid"', helper.indexOf("suspend_gate_processes")),
+  );
+  assert.match(helper, /chflags nouchg "\$gate_result_source"/);
+  assert.match(helper, /chflags nouchg "\$staged_result"/);
+  assert.doesNotMatch(helper, /-adminPassword/);
   assert.match(helper, /ps -o pid=,ppid=,stat=,comm= -U "\$gate_uid"/);
+  assert.ok(
+    helper.indexOf("stop_gate_processes", helper.indexOf("sysadminctl -deleteUser")) >= 0,
+  );
+  assert.match(helper, /account_verified" != true && -e "\$gate_home"/);
+
+  const generator = rebind.slice(
+    rebind.indexOf("  generate:"),
+    rebind.indexOf("  sanitize-generated-patch:"),
+  );
+  assert.match(generator, /sysadminctl -addUser "\$agent_user"/);
+  assert.match(generator, /sysadminctl -deleteUser "\$AGENT_USER"/);
+  assert.doesNotMatch(generator, /-adminPassword/);
+  assert.doesNotMatch(generator, /dscl \. -create/);
+  assert.doesNotMatch(generator, /dscl \. -delete/);
+  assert.ok(
+    generator.indexOf('echo "user=$agent_user"') <
+      generator.indexOf('sysadminctl -addUser "$agent_user"'),
+  );
+  assert.match(generator, /unexpectedly belongs to the admin group/);
+  assert.match(generator, /launchctl bootout "user\/\$cleanup_uid"/);
+  assert.match(generator, /launchctl bootout "gui\/\$cleanup_uid"/);
+  assert.match(generator, /stop_generator_processes \|\| cleanup_status=1/);
+  assert.match(generator, /account still exists after cleanup/);
+  assert.match(generator, /account still has a process after cleanup/);
+  assert.match(generator, /home still exists after cleanup/);
+  assert.doesNotMatch(generator, /\$AGENT_UID" -ge 600/);
+  assert.equal(
+    generator.match(/\$AGENT_UID" -ge 500/g)?.length,
+    3,
+    "all generator account guards must accept the sysadminctl UID range",
+  );
 });
 
 test("job deadlines leave trusted cleanup time after each untrusted process bound", async () => {

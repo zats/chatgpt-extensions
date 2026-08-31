@@ -16,6 +16,7 @@ import {
   inspectChatGptApp,
   ownedRuntimeProcesses,
   processRows,
+  readBoundedJsonFile,
   readRuntimeRecords,
   readSession,
   runtimeFailures,
@@ -35,6 +36,8 @@ import {
   assertRichContentDiagnostics,
   assertRichContentUnmountDiagnostics,
   assertRichProbeLifecycle,
+  richProbeDisposalEvents,
+  richProbeInteractionEvents,
 } from "./rich-message-gate.mjs";
 
 const defaultApp = "/Applications/ChatGPT.app";
@@ -54,6 +57,158 @@ const nativeProbeNodeSha256 =
 const nativeProbeFoundation =
   "/System/Library/Frameworks/Foundation.framework/Foundation";
 const nativeProbeObjcInput = "ChatGPTX native main probe";
+const safeErrorNames = new Set([
+  "AbortError",
+  "AggregateError",
+  "Error",
+  "RangeError",
+  "ReferenceError",
+  "SyntaxError",
+  "TimeoutError",
+  "TypeError",
+  "URIError",
+]);
+const safeGateFailureCodes = new Set([
+  "deterministic-thread-fixture",
+  "exact-binding",
+  "extension-activation",
+  "native-main-live-probe",
+  "no-runtime-failures",
+  "product-extension-live-interactions",
+  "product-extension-real-ui-interactions",
+  "remove-gate-session",
+  "rich-message-diagnostics",
+  "rich-message-events",
+  "rich-message-live-interactions",
+  "rich-message-unmount-diagnostics",
+  "rich-message-unmount-events",
+  "run-gate",
+  "stock-profile-warmup",
+  "stop-owned-processes",
+  "ui-surface-live-interactions",
+  "ui-surface-diagnostics",
+  "ui-surface-events",
+  "ui-surface-suggestion",
+  "ui-surface-announcement",
+  "ui-surface-sidebar",
+  "ui-surface-product-menu",
+  "ui-surface-home-composer",
+  "ui-surface-thread-row",
+  "ui-surface-thread-composer",
+]);
+const safeGateRuntimeEventNames = Object.freeze([
+  "electron-intercepted",
+  "exact-build-verified",
+  "main-extension-host-failed",
+  "main-extensions-activated",
+  "product-extension-probe-failed",
+  "product-extension-probe-passed",
+  "product-extension-probe-skipped",
+  "product-extension-real-ui-probe-failed",
+  "product-extension-real-ui-probe-passed",
+  "product-extension-real-ui-probe-skipped",
+  "renderer-bootstrap-error",
+  "renderer-channel-connect-failed",
+  "renderer-channel-disconnect-failed",
+  "renderer-channel-inject-failed",
+  "renderer-entry-registered",
+  "renderer-entry-registration-failed",
+  "renderer-host-injection-failed",
+  "renderer-injected",
+  "rich-content-probe-failed",
+  "rich-content-probe-mounted",
+  "rich-content-probe-skipped",
+  "rich-content-probe-unmount-failed",
+  "rich-content-probe-unmounted",
+  "runtime-loaded",
+  "ui-surface-probe-failed",
+  "ui-surface-probe-passed",
+  "ui-surface-probe-skipped",
+]);
+const safeRichProbeEventNames = new Set([
+  ...richProbeInteractionEvents,
+  ...richProbeDisposalEvents,
+]);
+
+function safeErrorName(error) {
+  const name = typeof error?.name === "string" ? error.name : "Error";
+  return safeErrorNames.has(name) ? name : "Error";
+}
+
+export function safeGateFailure(code, error) {
+  if (!safeGateFailureCodes.has(code)) {
+    throw new TypeError("Gate failure code is not allowlisted");
+  }
+  return Object.freeze({ code, errorName: safeErrorName(error) });
+}
+
+export function summarizeGateRuntimeEvents(records) {
+  const counts = Object.create(null);
+  for (const record of Array.isArray(records) ? records : []) {
+    if (!safeGateRuntimeEventNames.includes(record?.event)) continue;
+    counts[record.event] = (counts[record.event] ?? 0) + 1;
+  }
+  return Object.freeze(
+    Object.fromEntries(
+      safeGateRuntimeEventNames.flatMap((name) =>
+        counts[name] ? [[name, counts[name]]] : [],
+      ),
+    ),
+  );
+}
+
+export function summarizeRichProbeEventSequence(events) {
+  return Object.freeze(
+    (Array.isArray(events) ? events : [])
+      .flatMap((event) =>
+        safeRichProbeEventNames.has(event?.name) ? [event.name] : [],
+      )
+      .slice(0, 256),
+  );
+}
+
+export function summarizeNativeMainEvidence(value) {
+  return Object.freeze({
+    verified: true,
+    rendererConnections: value.channel.connectedRenderers.length,
+    rendererInvocations: value.channel.rendererToMainInvokes.length,
+    targetedEvent: true,
+    broadcastEvent: true,
+    cancellationObserved: true,
+    resourcesReleased: true,
+  });
+}
+
+export function summarizeUiSurfaceEvidence(diagnostics, events) {
+  return Object.freeze({
+    verified: true,
+    interactions: diagnostics.results.length,
+    lifecycleEvents: events.events.length,
+    homeState: true,
+    threadState: true,
+  });
+}
+
+export function summarizeProductExtensionEvidence() {
+  return Object.freeze({
+    verified: true,
+    threadColorApplied: true,
+    reactionApplied: true,
+  });
+}
+
+export function summarizeProductExtensionRealUiEvidence() {
+  return Object.freeze({
+    verified: true,
+    realDom: true,
+    headerColorApplied: true,
+    activityLayoutVerified: true,
+    standardLayoutVerified: true,
+    cloudLayoutVerified: true,
+    reactionApplied: true,
+    settingsVerified: true,
+  });
+}
 
 function usage(error) {
   if (error) console.error(error);
@@ -137,13 +292,70 @@ function resolveCodexHome(requested, requireAuthentication) {
   return directory;
 }
 
-export function createGateCodexHome(sourceCodexHome, session) {
-  const source = resolveCodexHome(sourceCodexHome, true);
-  const directory = ensurePrivateDirectory(path.join(session, "codex-home"));
-  const target = path.join(directory, "auth.json");
-  fs.copyFileSync(path.join(source, "auth.json"), target, fs.constants.COPYFILE_EXCL);
-  fs.chmodSync(target, 0o600);
-  return directory;
+const maximumAuthenticationBytes = 1024 * 1024;
+
+function privateCodexHome(directory, label) {
+  const requested = path.resolve(directory);
+  const requestedStatus = fs.lstatSync(requested);
+  if (
+    requestedStatus.isSymbolicLink() ||
+    !requestedStatus.isDirectory() ||
+    (requestedStatus.mode & 0o077) !== 0
+  ) {
+    throw new Error(`${label} must be a private directory, not a symbolic link`);
+  }
+  return fs.realpathSync(requested);
+}
+
+function privateAuthenticationFile(directory, label) {
+  const codexHome = privateCodexHome(directory, label);
+  const authFile = path.join(codexHome, "auth.json");
+  const status = fs.lstatSync(authFile);
+  if (
+    status.isSymbolicLink() ||
+    !status.isFile() ||
+    (status.mode & 0o077) !== 0 ||
+    status.size < 1 ||
+    status.size > maximumAuthenticationBytes
+  ) {
+    throw new Error(
+      `${label} auth.json must be a private regular file of at most 1 MiB`,
+    );
+  }
+  return Object.freeze({ codexHome, authFile, status });
+}
+
+export function resolveIsolatedGateCodexHome(requested) {
+  const authentication = privateAuthenticationFile(
+    requested,
+    "Isolated gate CODEX_HOME",
+  );
+  let document;
+  try {
+    document = JSON.parse(fs.readFileSync(authentication.authFile, "utf8"));
+  } catch {
+    throw new Error("Isolated gate auth.json must contain valid JSON");
+  }
+  if (document === null || typeof document !== "object" || Array.isArray(document)) {
+    throw new Error("Isolated gate auth.json must contain a JSON object");
+  }
+  const marker = path.join(
+    authentication.codexHome,
+    ".chatgpt-extensions-isolated-live-gate",
+  );
+  const markerStatus = fs.lstatSync(marker);
+  const homeStatus = fs.statSync(authentication.codexHome);
+  if (
+    markerStatus.isSymbolicLink() ||
+    !markerStatus.isFile() ||
+    markerStatus.size !== 0 ||
+    (markerStatus.mode & 0o077) !== 0 ||
+    markerStatus.uid !== homeStatus.uid ||
+    authentication.status.uid !== homeStatus.uid
+  ) {
+    throw new Error("Live gate CODEX_HOME is not an isolated owned directory");
+  }
+  return authentication.codexHome;
 }
 
 function sqlString(value) {
@@ -437,7 +649,7 @@ async function start(options) {
 
 async function waitForRichEventLog(directory, unmounted, selectedFile) {
   const deadline = Date.now() + 30_000;
-  const failures = new Map();
+  let lastFailure;
   while (Date.now() < deadline) {
     let files = selectedFile ? [selectedFile] : [];
     if (!selectedFile && fs.existsSync(directory)) {
@@ -447,19 +659,23 @@ async function waitForRichEventLog(directory, unmounted, selectedFile) {
     }
     for (const file of files) {
       try {
-        const events = JSON.parse(fs.readFileSync(file, "utf8")).events;
+        const events = readBoundedJsonFile(file).events;
         assertRichProbeLifecycle(events, unmounted);
         return { file, events };
       } catch (error) {
-        failures.set(path.basename(file), String(error));
+        lastFailure =
+          typeof error?.message === "string"
+            ? error.message
+            : safeErrorName(error);
       }
     }
     await sleep(100);
   }
-  const details = failures.size > 0
-    ? JSON.stringify(Object.fromEntries(failures))
-    : "no event files were found";
-  throw new Error(`Timed out waiting for Rich Message Probe events: ${details}`);
+  throw new Error(
+    `Timed out waiting for Rich Message Probe events: ${
+      lastFailure ?? "no event file was ready"
+    }`,
+  );
 }
 
 const uiComposerActionPlacements = Object.freeze([
@@ -578,25 +794,87 @@ export function assertUiSurfaceDiagnostics(value) {
   }
   if (missing.length > 0) {
     throw new Error(
-      `UI Surface Probe diagnostics are incomplete (${missing.join(", ")}): ${JSON.stringify(value)}`,
+      `UI Surface Probe diagnostics are incomplete (${missing.join(", ")})`,
     );
   }
 }
 
+export function uiSurfaceDiagnosticFailureCode(value) {
+  const results = value?.results;
+  const states = value?.states;
+  if (!Array.isArray(results) || results.length !== 23) {
+    return "ui-surface-diagnostics";
+  }
+  const incomplete = results.find((result) => {
+    if (result?.kind === "render") {
+      return (
+        result.ownerFound !== true ||
+        result.invalidateFound !== true ||
+        result.invalidateClicked !== true ||
+        result.oldDisconnected !== true ||
+        result.replaced !== true ||
+        result.actionFound !== true ||
+        result.actionClicked !== true
+      );
+    }
+    if (result?.kind === "dismiss") {
+      return (
+        result.found !== true ||
+        result.clicked !== true ||
+        result.oldDisconnected !== true
+      );
+    }
+    return (
+      result?.found !== true ||
+      result?.clicked !== true ||
+      (result.oldDisconnected !== true &&
+        result.replaced !== true &&
+        result.changed !== true)
+    );
+  });
+  if (incomplete) {
+    if (incomplete.name === "suggestion") return "ui-surface-suggestion";
+    if (incomplete.name?.startsWith("announcement-")) {
+      return "ui-surface-announcement";
+    }
+    if (incomplete.name === "sidebar") return "ui-surface-sidebar";
+    if (incomplete.name === "product-menu") return "ui-surface-product-menu";
+    if (incomplete.name?.startsWith("composer-")) {
+      return incomplete.state === "thread"
+        ? "ui-surface-thread-composer"
+        : "ui-surface-home-composer";
+    }
+    return "ui-surface-diagnostics";
+  }
+  if (
+    states?.home?.missingActions?.length > 0 ||
+    states?.home?.missingRenders?.length > 0
+  ) {
+    return "ui-surface-home-composer";
+  }
+  if (states?.thread?.threadRowFound !== true) {
+    return "ui-surface-thread-row";
+  }
+  if (
+    states?.thread?.missingActions?.length > 0 ||
+    states?.thread?.missingRenders?.length > 0
+  ) {
+    return "ui-surface-thread-composer";
+  }
+  return "ui-surface-diagnostics";
+}
+
 async function waitForUiSurfaceEvents(file, timeoutMilliseconds) {
   const deadline = Date.now() + timeoutMilliseconds;
-  let lastError;
   while (Date.now() < deadline) {
     try {
-      const value = JSON.parse(fs.readFileSync(file, "utf8"));
+      const value = readBoundedJsonFile(file);
       assertUiSurfaceEvents(value);
       return value;
-    } catch (error) {
-      lastError = error;
-    }
+    } catch {}
     await sleep(50);
   }
-  throw new Error(`Timed out waiting for UI Surface Probe events: ${String(lastError)}`);
+  throw new Error("Timed out waiting for UI Surface Probe events");
 }
 
 export function assertNativeMainProbeEvidence(value, expectations = {}) {
@@ -753,7 +1031,7 @@ export function assertNativeMainProbeEvidence(value, expectations = {}) {
   }
   if (missing.length > 0) {
     throw new Error(
-      `Native Main Probe evidence is incomplete (${missing.join(", ")}): ${JSON.stringify(value)}`,
+      `Native Main Probe evidence is incomplete (${missing.join(", ")})`,
     );
   }
   return value;
@@ -794,9 +1072,7 @@ export function assertProductExtensionDiagnostics(value) {
       "ChatGPTX product reaction probe selection" &&
     reactions.persisted.submit === false;
   if (!valid) {
-    throw new Error(
-      `Product extension diagnostics are incomplete: ${JSON.stringify(value)}`,
-    );
+    throw new Error("Product extension diagnostics are incomplete");
   }
 }
 
@@ -834,6 +1110,7 @@ export function assertProductExtensionRealUiDiagnostics(value) {
     Math.abs((layout?.indicator?.width ?? 0) - 3) > 0.5 ||
     Math.abs((layout?.titleGap ?? Number.NaN) - 3) > 0.75;
   const invalid =
+    value?.validationPassed !== true ||
     value?.realDom !== true ||
     thread?.scope !== "execution" ||
     typeof thread?.hostId !== "string" ||
@@ -890,9 +1167,7 @@ export function assertProductExtensionRealUiDiagnostics(value) {
     settings?.refreshControlAbsent !== true ||
     settings?.globalErrorAbsent !== true;
   if (invalid) {
-    throw new Error(
-      `Real product extension UI diagnostics are incomplete: ${JSON.stringify(value)}`,
-    );
+    throw new Error("Real product extension UI diagnostics are incomplete");
   }
 }
 
@@ -903,18 +1178,24 @@ async function runGate(options) {
   let session;
   let metadata;
   let warmMetadata;
+  let layout;
+  let runtimeEventCounts;
+  let richEventFile;
+  let richEventSequence;
   let failure;
+  let failureCode;
+  let activeGate = "run-gate";
   try {
     if (!options.binding) throw new TypeError("run-gate requires --binding");
     if (!options.codexHome) throw new TypeError("run-gate requires --codex-home");
     assertNoChatGptXProcess(processRows());
     session = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "chatgpt-extensions-gate."));
     fs.chmodSync(session, 0o700);
-    const layout = createSessionLayout(session, options.userDataDir);
+    layout = createSessionLayout(session, options.userDataDir);
+    activeGate = "exact-binding";
     const identity = inspectChatGptApp(options.app);
     const binding = selectBinding(identity, options.binding);
-    const sourceCodexHome = resolveCodexHome(options.codexHome, true);
-    const codexHome = createGateCodexHome(sourceCodexHome, session);
+    const codexHome = resolveIsolatedGateCodexHome(options.codexHome);
     const selections = extensionSelections(options.extensions);
     const identities = extensionIdentities(selections);
     const ids = new Set(identities.map((entry) => entry.id));
@@ -942,6 +1223,7 @@ async function runGate(options) {
       appContents: identity.contents,
       userDataDir: layout.userDataDir,
     });
+    activeGate = "stock-profile-warmup";
     await warmGateCodexHome(
       identity,
       layout,
@@ -955,15 +1237,16 @@ async function runGate(options) {
       status: "passed",
       evidence: { initializedState: true, stopped: true },
     });
+    activeGate = "deterministic-thread-fixture";
     const fixtureThreads = seedGateThreads(codexHome);
     gates.push({
       name: "deterministic-thread-fixture",
       status: "passed",
       evidence: {
         count: fixtureThreads.length,
-        threadIds: fixtureThreads.map((fixture) => fixture.id),
       },
     });
+    activeGate = "extension-activation";
     fs.writeFileSync(path.join(session, ".chatgptx-extension-test"), "chatgptx-extension-test-v1\n", { mode: 0o600 });
     fs.writeFileSync(path.join(session, "rich-content-probe"), "enabled\n", { mode: 0o600 });
     fs.writeFileSync(path.join(session, "ui-surface-probe"), "enabled\n", { mode: 0o600 });
@@ -1007,6 +1290,7 @@ async function runGate(options) {
       }
     }
 
+    activeGate = "native-main-live-probe";
     const nativeMainEvidence = await waitForJson(
       path.join(
         layout.storageDirectory,
@@ -1024,9 +1308,10 @@ async function runGate(options) {
     gates.push({
       name: "native-main-live-probe",
       status: "passed",
-      evidence: nativeMainEvidence,
+      evidence: summarizeNativeMainEvidence(nativeMainEvidence),
     });
 
+    activeGate = "rich-message-diagnostics";
     const richDiagnostics = await waitForJson(
       path.join(session, "rich-content-diagnostics.json"),
       "rich-content interaction diagnostics",
@@ -1038,14 +1323,17 @@ async function runGate(options) {
       "rich-message-probe",
       "events",
     );
-    const richEventFile = path.join(eventDirectory, richDiagnostics.eventFile);
+    richEventFile = path.join(eventDirectory, richDiagnostics.eventFile);
+    activeGate = "rich-message-events";
     let richEvents = await waitForRichEventLog(
       eventDirectory,
       false,
       richEventFile,
     );
     fs.writeFileSync(path.join(session, "rich-content-unmount-request"), "unmount\n", { mode: 0o600 });
+    activeGate = "rich-message-unmount-events";
     richEvents = await waitForRichEventLog(eventDirectory, true, richEvents.file);
+    activeGate = "rich-message-unmount-diagnostics";
     const unmountDiagnostics = await waitForJson(
       path.join(session, "rich-content-unmount-diagnostics.json"),
       "rich-content unmount diagnostics",
@@ -1058,17 +1346,19 @@ async function runGate(options) {
       status: "passed",
       evidence: {
         lifecycleEvents: richEvents.events.length,
-        diagnostics: "rich-content-diagnostics.json",
-        unmountDiagnostics: "rich-content-unmount-diagnostics.json",
+        verified: true,
       },
     });
 
+    activeGate = "ui-surface-diagnostics";
     const uiDiagnostics = await waitForJson(
       path.join(session, "ui-surface-diagnostics.json"),
       "UI surface interaction diagnostics",
       options.timeoutMilliseconds,
     );
+    activeGate = uiSurfaceDiagnosticFailureCode(uiDiagnostics);
     assertUiSurfaceDiagnostics(uiDiagnostics);
+    activeGate = "ui-surface-events";
     const uiEvents = await waitForUiSurfaceEvents(
       path.join(
         layout.storageDirectory,
@@ -1080,13 +1370,10 @@ async function runGate(options) {
     gates.push({
       name: "ui-surface-live-interactions",
       status: "passed",
-      evidence: {
-        interactions: uiDiagnostics.results,
-        events: uiEvents.events,
-        states: uiDiagnostics.states,
-      },
+      evidence: summarizeUiSurfaceEvidence(uiDiagnostics, uiEvents),
     });
 
+    activeGate = "product-extension-live-interactions";
     const productDiagnostics = await waitForJson(
       path.join(session, "product-extension-diagnostics.json"),
       "product extension diagnostics",
@@ -1096,12 +1383,10 @@ async function runGate(options) {
     gates.push({
       name: "product-extension-live-interactions",
       status: "passed",
-      evidence: {
-        threadColors: productDiagnostics.threadColors,
-        reactions: productDiagnostics.reactions,
-      },
+      evidence: summarizeProductExtensionEvidence(),
     });
 
+    activeGate = "product-extension-real-ui-interactions";
     const productRealUiDiagnostics = await waitForJson(
       path.join(session, "product-extension-real-ui-diagnostics.json"),
       "real product extension UI diagnostics",
@@ -1111,33 +1396,53 @@ async function runGate(options) {
     gates.push({
       name: "product-extension-real-ui-interactions",
       status: "passed",
-      evidence: {
-        thread: productRealUiDiagnostics.thread,
-        threadColors: productRealUiDiagnostics.threadColors,
-        reactions: productRealUiDiagnostics.reactions,
-      },
+      evidence: summarizeProductExtensionRealUiEvidence(),
     });
 
+    activeGate = "no-runtime-failures";
     await sleep(500);
     const failures = runtimeFailures(readRuntimeRecords(layout.logDirectory));
     if (failures.length > 0) {
-      throw new Error(`Runtime reported late failures: ${JSON.stringify(failures)}`);
+      const events = [...new Set(failures.map((record) => record.event))].sort();
+      throw new Error(`Runtime reported late failure events: ${events.join(", ")}`);
     }
     gates.push({ name: "no-runtime-failures", status: "passed" });
   } catch (error) {
     failure = error;
-    gates.push({ name: "run-gate", status: "failed", error: String(error?.stack ?? error) });
+    failureCode = activeGate;
+    if (layout) {
+      runtimeEventCounts = summarizeGateRuntimeEvents(
+        readRuntimeRecords(layout.logDirectory),
+      );
+    }
+    if (richEventFile) {
+      try {
+        richEventSequence = summarizeRichProbeEventSequence(
+          readBoundedJsonFile(richEventFile).events,
+        );
+      } catch {
+        // The fixed phase code and runtime event counts remain sufficient.
+      }
+    }
+    gates.push({
+      name: "run-gate",
+      status: "failed",
+      failure: safeGateFailure(failureCode, error),
+    });
   } finally {
     const cleanupTargets = [metadata, warmMetadata].filter(Boolean);
     for (const cleanupMetadata of cleanupTargets) {
       try {
         await stopOwnedProcesses(cleanupMetadata);
       } catch (error) {
-        failure ??= error;
+        if (!failure) {
+          failure = error;
+          failureCode = "stop-owned-processes";
+        }
         gates.push({
           name: "stop-owned-processes",
           status: "failed",
-          error: String(error),
+          failure: safeGateFailure("stop-owned-processes", error),
         });
       }
     }
@@ -1156,14 +1461,29 @@ async function runGate(options) {
         }
         fs.rmSync(canonicalSession, { recursive: true, force: false });
       } catch (error) {
-        failure ??= error;
-        gates.push({ name: "remove-gate-session", status: "failed", error: String(error) });
+        if (!failure) {
+          failure = error;
+          failureCode = "remove-gate-session";
+        }
+        gates.push({
+          name: "remove-gate-session",
+          status: "failed",
+          failure: safeGateFailure("remove-gate-session", error),
+        });
       }
     }
     const result = {
       status: failure ? "failed" : "passed",
       gates,
-      ...(failure ? { error: String(failure?.stack ?? failure) } : {}),
+      ...(failure
+        ? { failure: safeGateFailure(failureCode, failure) }
+        : {}),
+      ...(failure && runtimeEventCounts
+        ? { runtimeEventCounts }
+        : {}),
+      ...(failure && richEventSequence
+        ? { richEventSequence }
+        : {}),
     };
     writeJsonAtomic(options.result, result);
   }
