@@ -81,6 +81,7 @@ const safeRuntimeEventNames = Object.freeze([
   "product-extension-real-ui-probe-failed",
   "product-extension-real-ui-probe-passed",
   "product-extension-real-ui-probe-skipped",
+  "primary-ui-readiness",
   "renderer-bootstrap-error",
   "renderer-channel-connect-failed",
   "renderer-channel-disconnect-failed",
@@ -252,6 +253,54 @@ export function safeRichProbeReadiness(value) {
     owners,
     fallbacks,
     interactions,
+  });
+}
+
+export function safePrimaryUiReadiness(value) {
+  const latestBooleanKeys = [
+    "ready",
+    "appProtocol",
+    "documentComplete",
+    "bodyPresent",
+    "primaryRootFound",
+    "mainFocusFound",
+    "genericErrorVisible",
+    "updateActionVisible",
+    "retryActionVisible",
+  ];
+  const topLevelKeys = ["attempts", "readyAttempts", "latest"];
+  const latestKeys = [...latestBooleanKeys, "bodyChildren", "mainElements"];
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    Object.keys(value).sort().join("\0") !== topLevelKeys.sort().join("\0") ||
+    !Number.isSafeInteger(value.attempts) ||
+    value.attempts < 1 ||
+    value.attempts > 10000 ||
+    !Number.isSafeInteger(value.readyAttempts) ||
+    value.readyAttempts < 0 ||
+    value.readyAttempts > value.attempts ||
+    !value.latest ||
+    typeof value.latest !== "object" ||
+    Array.isArray(value.latest) ||
+    Object.keys(value.latest).sort().join("\0") !== latestKeys.sort().join("\0") ||
+    latestBooleanKeys.some((key) => typeof value.latest[key] !== "boolean") ||
+    !Number.isSafeInteger(value.latest.bodyChildren) ||
+    value.latest.bodyChildren < 0 ||
+    value.latest.bodyChildren > 10000 ||
+    !Number.isSafeInteger(value.latest.mainElements) ||
+    value.latest.mainElements < 0 ||
+    value.latest.mainElements > 10000
+  ) {
+    return undefined;
+  }
+  return Object.freeze({
+    attempts: value.attempts,
+    readyAttempts: value.readyAttempts,
+    latest: Object.freeze(
+      Object.fromEntries(latestKeys.map((key) => [key, value.latest[key]])),
+    ),
   });
 }
 
@@ -461,6 +510,9 @@ export function summarizeLauncherResult(value, expectations = {}) {
   const richProbeReadiness = safeRichProbeReadiness(
     value?.richProbeReadiness,
   );
+  const primaryUiReadiness = safePrimaryUiReadiness(
+    value?.primaryUiReadiness,
+  );
   return Object.freeze({
     status: value?.status === "passed" ? "passed" : "failed",
     gates: Object.freeze(
@@ -498,6 +550,7 @@ export function summarizeLauncherResult(value, expectations = {}) {
             ? { richEventSequence }
             : {}),
           ...(richProbeReadiness ? { richProbeReadiness } : {}),
+          ...(primaryUiReadiness ? { primaryUiReadiness } : {}),
         }),
   });
 }

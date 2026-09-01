@@ -18,6 +18,7 @@ import {
   safeGateFailure,
   seedGateThreads,
   summarizeNativeMainEvidence,
+  summarizeGatePrimaryUiReadiness,
   summarizeGateRuntimeEvents,
   summarizeGateRichProbeReadiness,
   summarizeRichProbeEventSequence,
@@ -99,6 +100,46 @@ test("public gate evidence uses strict allowlists", () => {
       "rich-content-probe-skipped": 1,
     },
   );
+  assert.deepEqual(
+    summarizeGatePrimaryUiReadiness([
+      {
+        event: "primary-ui-readiness",
+        documentId: privateValue,
+        ready: false,
+        diagnostics: {
+          appProtocol: true,
+          documentComplete: true,
+          bodyPresent: true,
+          bodyChildren: 3,
+          mainElements: 1,
+          primaryRootFound: false,
+          mainFocusFound: false,
+          genericErrorVisible: true,
+          updateActionVisible: true,
+          retryActionVisible: true,
+          bodyText: privateValue,
+        },
+      },
+    ]),
+    {
+      attempts: 1,
+      readyAttempts: 0,
+      latest: {
+        ready: false,
+        appProtocol: true,
+        documentComplete: true,
+        bodyPresent: true,
+        primaryRootFound: false,
+        mainFocusFound: false,
+        genericErrorVisible: true,
+        updateActionVisible: true,
+        retryActionVisible: true,
+        bodyChildren: 3,
+        mainElements: 1,
+      },
+    },
+  );
+  assert.equal(summarizeGatePrimaryUiReadiness([]), undefined);
   assert.deepEqual(
     summarizeRichProbeEventSequence([
       { name: "extension.activate", title: privateValue },

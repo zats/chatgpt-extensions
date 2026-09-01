@@ -11,6 +11,7 @@ import {
   parseStartCommand,
   safeFailure,
   safeRichProbeReadiness,
+  safePrimaryUiReadiness,
   summarizeLauncherResult,
 } from "./run-version-gate.mjs";
 
@@ -352,6 +353,23 @@ test("public version-gate output strips launcher evidence and private error name
         "code-block.mount",
       ],
       richProbeReadiness: completeRichProbeReadiness(),
+      primaryUiReadiness: {
+        attempts: 2,
+        readyAttempts: 0,
+        latest: {
+          ready: false,
+          appProtocol: true,
+          documentComplete: true,
+          bodyPresent: true,
+          primaryRootFound: false,
+          mainFocusFound: false,
+          genericErrorVisible: true,
+          updateActionVisible: true,
+          retryActionVisible: true,
+          bodyChildren: 3,
+          mainElements: 1,
+        },
+      },
       extra: privateValue,
     },
     { activationGates: ["activation:one:renderer"] },
@@ -366,8 +384,42 @@ test("public version-gate output strips launcher evidence and private error name
     runtimeEventCounts: { "rich-content-probe-skipped": 2 },
     richEventSequence: ["extension.activate", "code-block.mount"],
     richProbeReadiness: completeRichProbeReadiness(),
+    primaryUiReadiness: {
+      attempts: 2,
+      readyAttempts: 0,
+      latest: {
+        ready: false,
+        appProtocol: true,
+        documentComplete: true,
+        bodyPresent: true,
+        primaryRootFound: false,
+        mainFocusFound: false,
+        genericErrorVisible: true,
+        updateActionVisible: true,
+        retryActionVisible: true,
+        bodyChildren: 3,
+        mainElements: 1,
+      },
+    },
   });
   assert.doesNotMatch(JSON.stringify(value), new RegExp(privateValue));
+  assert.equal(
+    safePrimaryUiReadiness({
+      ...value.primaryUiReadiness,
+      privateAccount: privateValue,
+    }),
+    undefined,
+  );
+  assert.equal(
+    safePrimaryUiReadiness({
+      ...value.primaryUiReadiness,
+      latest: {
+        ...value.primaryUiReadiness.latest,
+        bodyChildren: 10001,
+      },
+    }),
+    undefined,
+  );
   assert.deepEqual(safeFailure("live", { name: privateValue }), {
     code: "live-gate-failed",
     errorName: "Error",

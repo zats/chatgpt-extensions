@@ -8,6 +8,7 @@ const {
   createPrimaryDocumentClaim,
   createRendererLifecycle,
   isCurrentRendererDocument,
+  primaryAppShellDiagnosticsExpression,
   primaryAppShellReadyExpression,
   probeCompletionAllowsContinuation,
   productExtensionRealUiFailureDiagnostics,
@@ -378,6 +379,49 @@ test("primary app shell selection delegates to the exact binding, not page text"
     ),
     true,
   );
+});
+
+test("primary app shell diagnostics expose only fixed readiness facts", () => {
+  const expression = primaryAppShellDiagnosticsExpression();
+  const focus = { isConnected: true };
+  const root = {
+    isConnected: true,
+    querySelector: (selector) =>
+      selector === '[data-app-shell-focus-area="main"]' ? focus : null,
+  };
+  const buttons = [
+    { textContent: "Update ChatGPT" },
+    { textContent: "Try again" },
+  ];
+  const document = {
+    readyState: "complete",
+    body: {
+      children: [{}, {}, {}],
+      textContent: "Private title Oops, an error has occurred private account",
+    },
+    querySelector: (selector) =>
+      selector === "main[data-app-shell-main-surface]" ? root : null,
+    querySelectorAll: (selector) =>
+      selector === "button" ? buttons : selector === "main" ? [root] : [],
+  };
+  const value = Function(
+    "document",
+    "location",
+    `return ${expression}`,
+  )(document, { protocol: "app:" });
+  assert.deepEqual(value, {
+    appProtocol: true,
+    documentComplete: true,
+    bodyPresent: true,
+    bodyChildren: 3,
+    mainElements: 1,
+    primaryRootFound: true,
+    mainFocusFound: true,
+    genericErrorVisible: true,
+    updateActionVisible: true,
+    retryActionVisible: true,
+  });
+  assert.doesNotMatch(JSON.stringify(value), /Private title|private account/);
 });
 
 test("primary app shell readiness stops when its renderer document is replaced", async () => {

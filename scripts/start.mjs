@@ -133,6 +133,7 @@ const safeGateRuntimeEventNames = Object.freeze([
   "product-extension-real-ui-probe-failed",
   "product-extension-real-ui-probe-passed",
   "product-extension-real-ui-probe-skipped",
+  "primary-ui-readiness",
   "renderer-bootstrap-error",
   "renderer-channel-connect-failed",
   "renderer-channel-disconnect-failed",
@@ -181,6 +182,43 @@ export function summarizeGateRuntimeEvents(records) {
       ),
     ),
   );
+}
+
+const primaryUiReadinessKeys = Object.freeze([
+  "appProtocol",
+  "documentComplete",
+  "bodyPresent",
+  "primaryRootFound",
+  "mainFocusFound",
+  "genericErrorVisible",
+  "updateActionVisible",
+  "retryActionVisible",
+]);
+
+export function summarizeGatePrimaryUiReadiness(records) {
+  const attempts = (Array.isArray(records) ? records : []).filter(
+    (record) => record?.event === "primary-ui-readiness",
+  );
+  if (attempts.length === 0) return undefined;
+  const latest = attempts.at(-1);
+  const diagnostics = latest?.diagnostics;
+  const integer = (value) =>
+    Number.isSafeInteger(value) && value >= 0 ? value : 0;
+  return Object.freeze({
+    attempts: attempts.length,
+    readyAttempts: attempts.filter((record) => record?.ready === true).length,
+    latest: Object.freeze({
+      ready: latest?.ready === true,
+      ...Object.fromEntries(
+        primaryUiReadinessKeys.map((key) => [
+          key,
+          diagnostics?.[key] === true,
+        ]),
+      ),
+      bodyChildren: integer(diagnostics?.bodyChildren),
+      mainElements: integer(diagnostics?.mainElements),
+    }),
+  });
 }
 
 export function summarizeRichProbeEventSequence(events) {
@@ -1323,6 +1361,7 @@ async function runGate(options) {
   let richEventFile;
   let richEventSequence;
   let richProbeReadiness;
+  let primaryUiReadiness;
   let richDiagnostics;
   let unmountDiagnostics;
   let failure;
@@ -1460,7 +1499,7 @@ async function runGate(options) {
       "rich-content interaction diagnostics",
       layout.logDirectory,
       identities,
-      options.timeoutMilliseconds,
+      Math.min(options.timeoutMilliseconds, 120_000),
     );
     assertRichContentDiagnostics(richDiagnostics);
     const probeDocumentId = richDiagnostics.rendererDocumentId;
@@ -1599,6 +1638,7 @@ async function runGate(options) {
     if (layout) {
       const runtimeRecords = readRuntimeRecords(layout.logDirectory);
       runtimeEventCounts = summarizeGateRuntimeEvents(runtimeRecords);
+      primaryUiReadiness = summarizeGatePrimaryUiReadiness(runtimeRecords);
       richProbeReadiness = summarizeGateRichProbeReadiness(runtimeRecords, [
         unmountDiagnostics,
         richDiagnostics,
@@ -1675,6 +1715,9 @@ async function runGate(options) {
         : {}),
       ...(failure && richProbeReadiness
         ? { richProbeReadiness }
+        : {}),
+      ...(failure && primaryUiReadiness
+        ? { primaryUiReadiness }
         : {}),
     };
     writeJsonAtomic(options.result, result);

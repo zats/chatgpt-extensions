@@ -548,6 +548,32 @@ function primaryAppShellReadyExpression() {
   );
 }
 
+function primaryAppShellDiagnosticsExpression() {
+  return `(() => {
+    const root = document.querySelector('main[data-app-shell-main-surface]');
+    const focus = root?.querySelector('[data-app-shell-focus-area="main"]');
+    const buttons = Array.from(document.querySelectorAll('button'));
+    const bodyText = typeof document.body?.textContent === 'string'
+      ? document.body.textContent
+      : '';
+    const buttonWithLabel = (label) => buttons.some(
+      (button) => button.textContent?.trim() === label,
+    );
+    return {
+      appProtocol: location.protocol === 'app:',
+      documentComplete: document.readyState === 'complete',
+      bodyPresent: document.body != null,
+      bodyChildren: Math.min(document.body?.children.length ?? 0, 10000),
+      mainElements: Math.min(document.querySelectorAll('main').length, 10000),
+      primaryRootFound: root?.isConnected === true,
+      mainFocusFound: focus?.isConnected === true,
+      genericErrorVisible: bodyText.includes('Oops, an error has occurred'),
+      updateActionVisible: buttonWithLabel('Update ChatGPT'),
+      retryActionVisible: buttonWithLabel('Try again'),
+    };
+  })()`;
+}
+
 async function waitForPrimaryUiReadiness({
   evaluate,
   isCurrent,
@@ -2201,6 +2227,22 @@ ${code}
     if (!isCurrentRendererDocument(rendererLifecycle, contents, document)) {
       return;
     }
+    if (liveProbeSuiteRequested) {
+      let diagnostics;
+      try {
+        diagnostics = await contents.executeJavaScript(
+          primaryAppShellDiagnosticsExpression(),
+        );
+      } catch {
+        diagnostics = {};
+      }
+      log("primary-ui-readiness", {
+        webContentsId: contents.id,
+        documentId: document.id,
+        ready: primaryUiDocument,
+        diagnostics,
+      });
+    }
     const ownsLiveProbeSuite = liveProbeSuiteClaim.claim(
       document.id,
       primaryUiDocument,
@@ -2842,6 +2884,7 @@ module.exports = Object.freeze({
   createRendererLifecycle,
   isCurrentRendererDocument,
   primaryAppShellReadyExpression,
+  primaryAppShellDiagnosticsExpression,
   productExtensionRealUiFailureDiagnostics,
   probeCompletionAllowsContinuation,
   requireCurrentRendererDocument,
