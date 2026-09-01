@@ -349,6 +349,7 @@ test("publication cleanup is idempotent and rescuer is scheduled", async () => {
     /name: Delete temporary candidate branch\s+continue-on-error: true/,
   );
   assert.match(rescuer, /schedule:/);
+  assert.match(rescuer, /checks: read/);
   assert.match(rescuer, /trigger-chatgpt-rebind\.mjs rescue/);
 });
 
@@ -536,22 +537,38 @@ test("job deadlines leave trusted cleanup time after each untrusted process boun
   assert.match(helper, /--timeout-ms 2700000/);
 });
 
-test("completed auth refresh finds prior-attempt artifacts on a failed-job rerun", async () => {
-  const value = await source("refresh-completed-auth-handoffs.yml");
-  assert.match(value, /head_branch == github\.event\.repository\.default_branch/);
-  assert.match(value, /\{artifacts: \[ \.\[\] \| \.artifacts\[\] \]\}/);
-  assert.doesNotMatch(value, /\.\[\]\[\] \| \.artifacts\[\]/);
-  assert.match(value, /select\(\(\$match\.attempt \| tonumber\) <= \$maximum\)/);
-  assert.match(value, /agent-source-attempt:/);
-  assert.match(value, /test-source-attempt:/);
+test("the rebind run salvages prior-attempt authentication without a follower event", async () => {
+  const value = await source("rebind-chatgpt.yml");
+  const locate = value.slice(
+    value.indexOf("  completed-auth-artifacts:"),
+    value.indexOf("  refresh-completed-agent-auth:"),
+  );
+  assert.match(locate, /SOURCE_ATTEMPT: \$\{\{ github\.run_attempt \}\}/);
+  assert.match(locate, /SOURCE_RUN_ID: \$\{\{ github\.run_id \}\}/);
+  assert.match(locate, /\{artifacts: \[ \.\[\] \| \.artifacts\[\] \]\}/);
+  assert.doesNotMatch(locate, /\.\[\]\[\] \| \.artifacts\[\]/);
+  assert.match(locate, /select\(\(\$match\.attempt \| tonumber\) <= \$maximum\)/);
+  assert.match(locate, /\$attempt > 1 or/);
+  assert.match(locate, /\.value\.result == "failure"/);
+  assert.match(locate, /if \[\[ "\$salvage_required" == "true" \]\]; then/);
+  assert.match(value, /refresh-completed-agent-auth:/);
+  assert.match(value, /refresh-completed-test-auth:/);
+  assert.match(value, /COMPLETED_ARTIFACT_RESULT:/);
+  assert.match(value, /COMPLETED_SALVAGE_REQUIRED:/);
+  assert.match(value, /salvage_success=true/);
+  assert.match(value, /COMPLETED_ARTIFACT_RESULT" != "success/);
+  assert.match(value, /COMPLETED_AGENT_REFRESH_RESULT/);
+  assert.match(value, /COMPLETED_TEST_REFRESH_RESULT/);
   assert.match(
     value,
-    /source_run_attempt: \$\{\{ needs\.locate\.outputs\.agent-source-attempt \}\}/,
+    /source_run_attempt: \$\{\{ needs\.completed-auth-artifacts\.outputs\.agent-source-attempt \}\}/,
   );
   assert.match(
     value,
-    /source_run_attempt: \$\{\{ needs\.locate\.outputs\.test-source-attempt \}\}/,
+    /source_run_attempt: \$\{\{ needs\.completed-auth-artifacts\.outputs\.test-source-attempt \}\}/,
   );
+  const names = await readdir(workflows);
+  assert.equal(names.includes("refresh-completed-auth-handoffs.yml"), false);
 });
 
 test("recovery and existing publication run current automation against historical binding data", async () => {
@@ -580,13 +597,19 @@ test("current promotion preserves the immutable binding source and gates the sel
 
 test("stale-main races request one bounded fresh-base run and never rebase", async () => {
   const rebind = await source("rebind-chatgpt.yml");
-  const retry = await source("retry-transient-rebind.yml");
   assert.equal(
     [...rebind.matchAll(/chatgpt-rebind-fresh-base-required/g)].length,
     4,
   );
-  assert.match(retry, /retry-transient-rebind-failure\.mjs/);
   assert.match(rebind, /"outcome=retrying"/);
+  assert.match(rebind, /name: Dispatch one bounded fresh-base retry/);
+  assert.match(rebind, /if \[\[ "\$GITHUB_RUN_ATTEMPT" == "1" \]\]; then/);
+  assert.match(rebind, /trigger-chatgpt-rebind\.mjs retry-transient/);
+  assert.match(rebind, /trigger-chatgpt-rebind\.mjs settle-failed/);
+  assert.doesNotMatch(
+    rebind,
+    /"labels":\["chatgpt-binding","pending"\][\s\S]*?outcome=retrying/,
+  );
   assert.match(rebind, /if: steps\.state\.outputs\.outcome == 'success'/);
   assert.match(rebind, /chatgpt-rebind-run-lineage-v1 \$GITHUB_RUN_ID \$automatic_parent/);
   assert.doesNotMatch(rebind, /git rebase/);
@@ -594,16 +617,27 @@ test("stale-main races request one bounded fresh-base run and never rebase", asy
 
 test("failed runs settle only after the bounded transient classifier", async () => {
   const rebind = await source("rebind-chatgpt.yml");
-  const retry = await source("retry-transient-rebind.yml");
-  assert.match(retry, /\{jobs: \[ \.\[\] \| \.jobs\[\] \]\}/);
-  assert.doesNotMatch(retry, /\.\[\]\[\] \| \.jobs\[\]/);
-  assert.doesNotMatch(retry, /run_attempt < 2/);
-  assert.match(retry, /trigger-chatgpt-rebind\.mjs settle-failed/);
+  const classifier = rebind.slice(
+    rebind.indexOf("name: Classify and settle this failed run"),
+    rebind.indexOf("name: Continue or stop an exact frozen backtest batch"),
+  );
+  assert.match(
+    classifier,
+    /\{jobs: \[ \.\[\] \| \.jobs\[\] \| select\(\.status == "completed"\) \]\}/,
+  );
+  assert.doesNotMatch(classifier, /\.\[\]\[\] \| \.jobs\[\]/);
+  assert.match(classifier, /\{conclusion:"failure",run_attempt:\$attempt\}/);
+  assert.match(classifier, /retry-transient-rebind-failure\.mjs/);
+  assert.match(classifier, /trigger-chatgpt-rebind\.mjs retry-transient/);
+  assert.match(classifier, /trigger-chatgpt-rebind\.mjs settle-failed/);
   assert.match(
     rebind,
-    /Binding run failed and is waiting for the bounded transient-failure classifier/,
+    /this run is applying the bounded transient-failure classifier/,
   );
   assert.match(rebind, /if: steps\.state\.outputs\.outcome == 'success'/);
+  assert.match(rebind, /if: always\(\) && steps\.state\.outputs\.outcome != 'success'/);
+  const names = await readdir(workflows);
+  assert.equal(names.includes("retry-transient-rebind.yml"), false);
   const trigger = await readFile(
     path.join(root, "scripts", "trigger-chatgpt-rebind.mjs"),
     "utf8",
@@ -611,6 +645,17 @@ test("failed runs settle only after the bounded transient classifier", async () 
   assert.match(trigger, /async function settleFailedRun/);
   assert.match(trigger, /await continueBatch\(repository, match\.issue\.number, "failed"\)/);
   assert.match(trigger, /\["retry-transient", "settle-failed"\]/);
+  assert.match(trigger, /shouldRetryTransientFailure/);
+  assert.match(trigger, /chatgpt-rebind-pending-redrive-v1/);
+  assert.match(trigger, /decision === "retry-transient"/);
+  const retry = trigger.slice(
+    trigger.indexOf("async function retryTransientRun"),
+    trigger.indexOf("export function backtestBatchId"),
+  );
+  assert.match(
+    retry,
+    /chatgpt-rebind-auto-retry-v1[\s\S]*chatgpt-rebind-rescue-v1[\s\S]*recordAutomaticRetryDispatch[\s\S]*setIssueStatus\(repository, match\.issue\.number, "failed"\)[\s\S]*await dispatch/,
+  );
 });
 
 test("recovery success reports only the gates that recovery ran", async () => {

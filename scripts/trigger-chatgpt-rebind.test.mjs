@@ -594,10 +594,37 @@ test("rescuer redrives pending, waits for active, and recovers terminal success"
   assert.equal(decideIssueRescue({ labels: [{ name: "pending" }] }), "redrive");
   assert.equal(
     decideIssueRescue(
+      { labels: [{ name: "pending" }] },
+      undefined,
+      Date.now(),
+      { pendingRedriveAttempts: 1 },
+    ),
+    "fail",
+  );
+  assert.equal(
+    decideIssueRescue(
       { labels: [{ name: "in-progress" }] },
       { status: "in_progress", conclusion: null },
     ),
     "wait",
+  );
+  assert.equal(
+    decideIssueRescue(
+      { labels: [{ name: "in-progress" }] },
+      undefined,
+      Date.now(),
+      { pendingRedriveAttempts: 0 },
+    ),
+    "retry",
+  );
+  assert.equal(
+    decideIssueRescue(
+      { labels: [{ name: "in-progress" }] },
+      undefined,
+      Date.now(),
+      { pendingRedriveAttempts: 1 },
+    ),
+    "fail",
   );
   assert.equal(
     decideIssueRescue(
@@ -617,6 +644,19 @@ test("rescuer redrives pending, waits for active, and recovers terminal success"
       Date.parse("2026-08-31T11:00:00Z"),
     ),
     "fail",
+  );
+  assert.equal(
+    decideIssueRescue(
+      { labels: [{ name: "in-progress" }] },
+      {
+        status: "completed",
+        conclusion: "failure",
+        updated_at: "2026-08-31T10:00:00Z",
+      },
+      Date.parse("2026-08-31T11:00:00Z"),
+      { transientFailure: true },
+    ),
+    "retry-transient",
   );
   assert.equal(decideIssueRescue({ labels: [{ name: "queued" }] }), "ignore");
   assert.equal(

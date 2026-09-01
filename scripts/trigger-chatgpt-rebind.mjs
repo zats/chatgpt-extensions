@@ -9,6 +9,7 @@ import { pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 
 import { expectedDownloadUrl } from "./resolve-appcast-versions.mjs";
+import { shouldRetryTransientFailure } from "./retry-transient-rebind-failure.mjs";
 
 export const requestModes = Object.freeze(["current", "backtest", "correction"]);
 export const statusLabels = Object.freeze([
@@ -732,13 +733,22 @@ export function decideIssueRescue(issue, run, now = Date.now(), retryContext) {
   if (labels.includes("queued") || labels.includes("success")) {
     return "ignore";
   }
-  if (labels.includes("pending")) return "redrive";
+  if (labels.includes("pending")) {
+    return (retryContext?.pendingRedriveAttempts ?? 0) < 1
+      ? "redrive"
+      : "fail";
+  }
   if (!labels.includes("in-progress")) return "ignore";
-  if (!run) return "retry";
+  if (!run) {
+    return (retryContext?.pendingRedriveAttempts ?? 0) < 1
+      ? "retry"
+      : "fail";
+  }
   if (run.status !== "completed") return "wait";
   if (run.conclusion === "success") return "recover";
   const completedAt = Date.parse(run.updated_at ?? "");
   if (Number.isFinite(completedAt) && now - completedAt < 30 * 60_000) return "wait";
+  if (retryContext?.transientFailure === true) return "retry-transient";
   return "fail";
 }
 
@@ -761,6 +771,50 @@ function recentRescueMarker(comments, now = Date.now()) {
     const match = /^<!-- chatgpt-rebind-rescue-v1 (\d+) -->$/.exec(comment.body);
     return match && now - Number(match[1]) < 20 * 60_000;
   });
+}
+
+function pendingRedriveAttempts(comments) {
+  return comments.filter((comment) => {
+    if (comment?.user?.login !== "github-actions[bot]" || typeof comment.body !== "string") {
+      return false;
+    }
+    return /^<!-- chatgpt-rebind-pending-redrive-v1 [1-9]\d* -->$/.test(comment.body);
+  }).length;
+}
+
+function transientFailureForRun(repository, run) {
+  if (
+    !run ||
+    run.status !== "completed" ||
+    !["failure", "startup_failure", "stale"].includes(run.conclusion)
+  ) {
+    return false;
+  }
+  if (["startup_failure", "stale"].includes(run.conclusion)) {
+    return shouldRetryTransientFailure(run, [], []);
+  }
+  const pages = JSON.parse(
+    runGh([
+      "api",
+      "--paginate",
+      "--slurp",
+      `repos/${repository}/actions/runs/${run.id}/jobs?per_page=100`,
+    ]),
+  );
+  const jobs = pages
+    .flatMap((page) => page?.jobs ?? [])
+    .filter((job) => job?.status === "completed");
+  const annotations = jobs.flatMap((job) =>
+    JSON.parse(
+      runGh([
+        "api",
+        "--paginate",
+        "--slurp",
+        `repos/${repository}/check-runs/${job.id}/annotations?per_page=100`,
+      ]),
+    ).flat(),
+  );
+  return shouldRetryTransientFailure(run, jobs, annotations);
 }
 
 function latestAutomaticRetry(comments) {
@@ -984,22 +1038,40 @@ async function rescueRepository(repository, workerActor) {
     const run = runId
       ? JSON.parse(runGh(["api", `repos/${repository}/actions/runs/${runId}`]))
       : undefined;
-    const decision = decideIssueRescue(listed, run, Date.now(), {
+    const retryContext = {
       sourceRunId: automaticRetrySource,
       latestRunId: runId,
       dispatchAttempts: automaticRetryDispatchCount,
-    });
+      pendingRedriveAttempts: pendingRedriveAttempts(comments),
+    };
+    let decision = decideIssueRescue(listed, run, Date.now(), retryContext);
+    if (decision === "fail" && run) {
+      decision = decideIssueRescue(listed, run, Date.now(), {
+        ...retryContext,
+        transientFailure: transientFailureForRun(repository, run),
+      });
+    }
     if (["ignore", "wait"].includes(decision)) continue;
-    addIssueComment(
-      repository,
-      listed.number,
-      `<!-- chatgpt-rebind-rescue-v1 ${Date.now()} -->`,
-    );
     if (decision === "redrive") {
+      addIssueComment(
+        repository,
+        listed.number,
+        `<!-- chatgpt-rebind-rescue-v1 ${Date.now()} -->`,
+      );
+      addIssueComment(
+        repository,
+        listed.number,
+        `<!-- chatgpt-rebind-pending-redrive-v1 ${retryContext.pendingRedriveAttempts + 1} -->`,
+      );
       await dispatch(repository, validated.request, listed.number);
       continue;
     }
     if (decision === "redrive-retry") {
+      addIssueComment(
+        repository,
+        listed.number,
+        `<!-- chatgpt-rebind-rescue-v1 ${Date.now()} -->`,
+      );
       recordAutomaticRetryDispatch(
         repository,
         listed.number,
@@ -1015,7 +1087,16 @@ async function rescueRepository(repository, workerActor) {
       );
       continue;
     }
+    if (decision === "retry-transient") {
+      await retryTransientRun(repository, workerActor, runId);
+      continue;
+    }
     if (decision === "recover") {
+      addIssueComment(
+        repository,
+        listed.number,
+        `<!-- chatgpt-rebind-rescue-v1 ${Date.now()} -->`,
+      );
       const landedSha = exactBindingOnMain(repository, validated.request);
       if (landedSha) {
         addIssueComment(repository, listed.number, `Landed binding SHA: ${landedSha}`);
@@ -1031,6 +1112,16 @@ async function rescueRepository(repository, workerActor) {
       continue;
     }
     if (decision === "retry") {
+      addIssueComment(
+        repository,
+        listed.number,
+        `<!-- chatgpt-rebind-rescue-v1 ${Date.now()} -->`,
+      );
+      addIssueComment(
+        repository,
+        listed.number,
+        `<!-- chatgpt-rebind-pending-redrive-v1 ${retryContext.pendingRedriveAttempts + 1} -->`,
+      );
       setIssueStatus(repository, listed.number, "pending");
       addIssueComment(
         repository,
@@ -1044,8 +1135,13 @@ async function rescueRepository(repository, workerActor) {
     addIssueComment(
       repository,
       listed.number,
-      `Binding run ${runId} ended with ${run?.conclusion ?? "an unknown failure"}. Automatic transient reruns are bounded; a trusted collaborator can comment exactly \`retry\`.`,
+      runId
+        ? `Binding run ${runId} ended with ${run?.conclusion ?? "an unknown failure"}. Automatic transient reruns are bounded; a trusted collaborator can comment exactly \`retry\`.`
+        : "No rebind run started after one bounded dispatch redrive. A trusted collaborator can comment exactly `retry`.",
     );
+    if (validated.request.mode === "backtest") {
+      await continueBatch(repository, listed.number, "failed");
+    }
   }
 }
 
@@ -1101,6 +1197,11 @@ async function retryTransientRun(repository, workerActor, runId) {
     repository,
     match.issue.number,
     `<!-- chatgpt-rebind-auto-retry-v1 ${runId} -->`,
+  );
+  addIssueComment(
+    repository,
+    match.issue.number,
+    `<!-- chatgpt-rebind-rescue-v1 ${Date.now()} -->`,
   );
   recordAutomaticRetryDispatch(repository, match.issue.number, runId, 1);
   setIssueStatus(repository, match.issue.number, "failed");

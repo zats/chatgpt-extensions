@@ -1957,7 +1957,7 @@ jobs:
           url="$(scripts/publish-binding-release.sh "$RUNNER_TEMP/binding-release.json" "$GITHUB_REPOSITORY")"
           echo "url=$url" >> "$GITHUB_OUTPUT"
 
-  finalize:
+  completed-auth-artifacts:
     if: always() && needs.request.outputs.active == 'true'
     needs:
       - request
@@ -1986,6 +1986,145 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
+      actions: read
+      contents: read
+    outputs:
+      agent-artifact: ${{ steps.artifacts.outputs.agent-artifact }}
+      agent-source-attempt: ${{ steps.artifacts.outputs.agent-source-attempt }}
+      salvage-required: ${{ steps.artifacts.outputs.salvage-required }}
+      test-artifact: ${{ steps.artifacts.outputs.test-artifact }}
+      test-source-attempt: ${{ steps.artifacts.outputs.test-source-attempt }}
+    steps:
+      - name: Locate exact handoffs that need final salvage
+        id: artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JOB_RESULTS: ${{ toJSON(needs) }}
+          SOURCE_ATTEMPT: ${{ github.run_attempt }}
+          SOURCE_RUN_ID: ${{ github.run_id }}
+        run: |
+          salvage_required="$(jq -r \
+            --argjson attempt "$SOURCE_ATTEMPT" '
+              $attempt > 1 or
+              (to_entries | any(.value.result == "failure" or .value.result == "cancelled"))
+            ' <<< "$JOB_RESULTS")"
+          agent_record='{}'
+          test_record='{}'
+          if [[ "$salvage_required" == "true" ]]; then
+            gh api --paginate --slurp \
+              "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID/artifacts?per_page=100" \
+              | jq '{artifacts: [ .[] | .artifacts[] ]}' > "$RUNNER_TEMP/artifacts.json"
+            agent_record="$(jq -c \
+              --arg run "$SOURCE_RUN_ID" \
+              --argjson maximum "$SOURCE_ATTEMPT" '
+                [.artifacts[] |
+                  select(.expired == false) |
+                  . as $artifact |
+                  (try (.name | capture("^ci-auth-refresh-agent-" + $run + "-(?<attempt>[0-9]+)$")) catch empty) as $match |
+                  select(($match.attempt | tonumber) <= $maximum) |
+                  {name: $artifact.name, attempt: ($match.attempt | tonumber), createdAt: $artifact.created_at}
+                ] | sort_by(.attempt, .createdAt) | last // {}
+              ' "$RUNNER_TEMP/artifacts.json")"
+            test_record="$(jq -c \
+              --arg run "$SOURCE_RUN_ID" \
+              --argjson maximum "$SOURCE_ATTEMPT" '
+                [.artifacts[] |
+                  select(.expired == false) |
+                  . as $artifact |
+                  (try (.name | capture("^ci-auth-refresh-test-" + $run + "-(?<attempt>[0-9]+)-[A-Za-z0-9][A-Za-z0-9._-]*$")) catch empty) as $match |
+                  select(($match.attempt | tonumber) <= $maximum) |
+                  {name: $artifact.name, attempt: ($match.attempt | tonumber), createdAt: $artifact.created_at}
+                ] | sort_by(.attempt, .createdAt) | last // {}
+              ' "$RUNNER_TEMP/artifacts.json")"
+          fi
+          {
+            echo "agent-artifact=$(jq -r '.name // empty' <<< "$agent_record")"
+            echo "agent-source-attempt=$(jq -r '.attempt // empty' <<< "$agent_record")"
+            echo "salvage-required=$salvage_required"
+            echo "test-artifact=$(jq -r '.name // empty' <<< "$test_record")"
+            echo "test-source-attempt=$(jq -r '.attempt // empty' <<< "$test_record")"
+          } >> "$GITHUB_OUTPUT"
+
+  refresh-completed-agent-auth:
+    needs:
+      - request
+      - completed-auth-artifacts
+    if: >-
+      always() &&
+      needs.request.outputs.active == 'true' &&
+      needs.completed-auth-artifacts.outputs.salvage-required == 'true' &&
+      needs.completed-auth-artifacts.outputs.agent-artifact != ''
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/refresh-auth-handoff.yml
+    with:
+      artifact_name: ${{ needs.completed-auth-artifacts.outputs.agent-artifact }}
+      artifact_run_id: ${{ github.run_id }}
+      role: agent
+      source_run_id: ${{ github.run_id }}
+      source_run_attempt: ${{ needs.completed-auth-artifacts.outputs.agent-source-attempt }}
+      target_environment: codex-agent
+      target_secret: CODEX_AGENT_AUTH_JSON
+    secrets: inherit
+
+  refresh-completed-test-auth:
+    needs:
+      - request
+      - completed-auth-artifacts
+    if: >-
+      always() &&
+      needs.request.outputs.active == 'true' &&
+      needs.completed-auth-artifacts.outputs.salvage-required == 'true' &&
+      needs.completed-auth-artifacts.outputs.test-artifact != ''
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/refresh-auth-handoff.yml
+    with:
+      artifact_name: ${{ needs.completed-auth-artifacts.outputs.test-artifact }}
+      artifact_run_id: ${{ github.run_id }}
+      role: test
+      source_run_id: ${{ github.run_id }}
+      source_run_attempt: ${{ needs.completed-auth-artifacts.outputs.test-source-attempt }}
+      target_environment: chatgpt-test
+      target_secret: CHATGPT_TEST_AUTH_JSON
+    secrets: inherit
+
+  finalize:
+    if: always() && needs.request.outputs.active == 'true'
+    needs:
+      - request
+      - existing-validation
+      - existing-publish
+      - refresh-existing-test-auth
+      - prepare-promotion
+      - promotion-candidate-validation
+      - land-promotion
+      - promotion-protected-validation
+      - refresh-promotion-protected-test-auth
+      - generate
+      - sanitize-generated-patch
+      - refresh-agent-auth
+      - prepare-candidate
+      - candidate-validation
+      - refresh-candidate-test-auth
+      - land
+      - protected-validation
+      - refresh-protected-test-auth
+      - publish
+      - recovery-publish
+      - precommit-static-validation
+      - precommit-validation
+      - refresh-precommit-test-auth
+      - completed-auth-artifacts
+      - refresh-completed-agent-auth
+      - refresh-completed-test-auth
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      checks: read
       contents: write
       issues: write
     steps:
@@ -2000,6 +2139,12 @@ jobs:
           GENERATE_RESULT: ${{ needs.generate.result }}
           SANITIZE_RESULT: ${{ needs.sanitize-generated-patch.result }}
           AGENT_REFRESH_RESULT: ${{ needs.refresh-agent-auth.result }}
+          COMPLETED_AGENT_ARTIFACT: ${{ needs.completed-auth-artifacts.outputs.agent-artifact }}
+          COMPLETED_AGENT_REFRESH_RESULT: ${{ needs.refresh-completed-agent-auth.result }}
+          COMPLETED_ARTIFACT_RESULT: ${{ needs.completed-auth-artifacts.result }}
+          COMPLETED_SALVAGE_REQUIRED: ${{ needs.completed-auth-artifacts.outputs.salvage-required }}
+          COMPLETED_TEST_ARTIFACT: ${{ needs.completed-auth-artifacts.outputs.test-artifact }}
+          COMPLETED_TEST_REFRESH_RESULT: ${{ needs.refresh-completed-test-auth.result }}
           GENERATION: ${{ needs.request.outputs.generation }}
           GH_TOKEN: ${{ github.token }}
           ISSUE_NUMBER: ${{ needs.request.outputs.issue-number }}
@@ -2033,13 +2178,24 @@ jobs:
         run: |
           success=false
           publication_url=""
+          salvage_success=true
+          if [[ "$COMPLETED_ARTIFACT_RESULT" != "success" ]]; then
+            salvage_success=false
+          elif [[ "$COMPLETED_SALVAGE_REQUIRED" == "true" ]]; then
+            if [[ ( -n "$COMPLETED_AGENT_ARTIFACT" && "$COMPLETED_AGENT_REFRESH_RESULT" != "success" ) ||
+                  ( -n "$COMPLETED_TEST_ARTIFACT" && "$COMPLETED_TEST_REFRESH_RESULT" != "success" ) ]]; then
+              salvage_success=false
+            fi
+          fi
           if [[ "$VALIDATION_ONLY" == "true" && "$PROMOTION" != "true" &&
+                "$salvage_success" == "true" &&
                 "$EXISTING_RESULT" == "success" &&
                 "$EXISTING_REFRESH_RESULT" == "success" &&
                 "$EXISTING_PUBLISH_RESULT" == "success" ]]; then
             success=true
             publication_url="$EXISTING_PUBLISH_URL"
           elif [[ "$PROMOTION" == "true" &&
+                  "$salvage_success" == "true" &&
                   "$EXISTING_RESULT" == "success" &&
                   "$EXISTING_REFRESH_RESULT" == "success" &&
                   "$EXISTING_PUBLISH_RESULT" == "success" &&
@@ -2051,12 +2207,14 @@ jobs:
             success=true
             publication_url="$EXISTING_PUBLISH_URL"
           elif [[ "$RECOVERY" == "true" &&
+                  "$salvage_success" == "true" &&
                   "$EXISTING_RESULT" == "success" &&
                   "$EXISTING_REFRESH_RESULT" == "success" &&
                   "$RECOVERY_PUBLISH_RESULT" == "success" ]]; then
             success=true
             publication_url="$RECOVERY_URL"
           elif [[ "$GENERATION" == "true" &&
+                  "$salvage_success" == "true" &&
                   "$GENERATE_RESULT" == "success" &&
                   "$SANITIZE_RESULT" == "success" &&
                   "$AGENT_REFRESH_RESULT" == "success" &&
@@ -2100,15 +2258,10 @@ jobs:
               fresh_base_required=true
             fi
             if [[ "$fresh_base_required" == "true" ]]; then
-              gh api --method PATCH \
-                "repos/$GITHUB_REPOSITORY/issues/$ISSUE_NUMBER" \
-                --input - <<'JSON'
-          {"state":"open","labels":["chatgpt-binding","pending"]}
-          JSON
               body="The tested patch used a stale main commit. One bounded trusted run can start again from the fresh base; the tested patch will not be rebased."
               echo "outcome=retrying" >> "$GITHUB_OUTPUT"
             else
-              body="Binding run failed and is waiting for the bounded transient-failure classifier: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+              body="Binding run failed; this run is applying the bounded transient-failure classifier: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
               echo "outcome=failed" >> "$GITHUB_OUTPUT"
             fi
             if [[ "$LAND_RESULT" == "success" && -n "$LANDED_SHA" ]]; then
@@ -2138,6 +2291,67 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
+      - name: Dispatch one bounded fresh-base retry
+        if: steps.state.outputs.outcome == 'retrying'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ "$GITHUB_RUN_ATTEMPT" == "1" ]]; then
+            node scripts/trigger-chatgpt-rebind.mjs retry-transient \
+              --repository "$GITHUB_REPOSITORY" \
+              --worker-actor "$GITHUB_REPOSITORY_OWNER" \
+              --run-id "$GITHUB_RUN_ID"
+          else
+            node scripts/trigger-chatgpt-rebind.mjs settle-failed \
+              --repository "$GITHUB_REPOSITORY" \
+              --worker-actor "$GITHUB_REPOSITORY_OWNER" \
+              --run-id "$GITHUB_RUN_ID"
+          fi
+      - name: Classify and settle this failed run
+        if: steps.state.outputs.outcome == 'failed'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          jq -n --argjson attempt "$GITHUB_RUN_ATTEMPT" \
+            '{conclusion:"failure",run_attempt:$attempt}' \
+            > "$RUNNER_TEMP/run.json"
+          gh api --paginate --slurp \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" \
+            | jq '{jobs: [ .[] | .jobs[] | select(.status == "completed") ]}' \
+            > "$RUNNER_TEMP/jobs.json"
+          printf '[]\n' > "$RUNNER_TEMP/annotations.json"
+          while IFS= read -r check_run_id; do
+            gh api --paginate --slurp \
+              "repos/$GITHUB_REPOSITORY/check-runs/$check_run_id/annotations?per_page=100" \
+              | jq '[.[][]]' > "$RUNNER_TEMP/one-annotations.json"
+            jq -s 'add' \
+              "$RUNNER_TEMP/annotations.json" \
+              "$RUNNER_TEMP/one-annotations.json" \
+              > "$RUNNER_TEMP/merged-annotations.json"
+            mv "$RUNNER_TEMP/merged-annotations.json" "$RUNNER_TEMP/annotations.json"
+          done < <(jq -r '.jobs[].id' "$RUNNER_TEMP/jobs.json")
+          decision="$(node scripts/retry-transient-rebind-failure.mjs \
+            "$RUNNER_TEMP/run.json" \
+            "$RUNNER_TEMP/jobs.json" \
+            "$RUNNER_TEMP/annotations.json")"
+          case "$decision" in
+            retry)
+              node scripts/trigger-chatgpt-rebind.mjs retry-transient \
+                --repository "$GITHUB_REPOSITORY" \
+                --worker-actor "$GITHUB_REPOSITORY_OWNER" \
+                --run-id "$GITHUB_RUN_ID"
+              ;;
+            ignore)
+              node scripts/trigger-chatgpt-rebind.mjs settle-failed \
+                --repository "$GITHUB_REPOSITORY" \
+                --worker-actor "$GITHUB_REPOSITORY_OWNER" \
+                --run-id "$GITHUB_RUN_ID"
+              ;;
+            *)
+              echo "Transient failure classifier returned an invalid decision" >&2
+              exit 1
+              ;;
+          esac
       - name: Continue or stop an exact frozen backtest batch
         if: steps.state.outputs.outcome == 'success'
         env:
@@ -2150,5 +2364,5 @@ jobs:
             --issue-number "$ISSUE_NUMBER" \
             --outcome "$OUTCOME"
       - name: Preserve failed workflow conclusion
-        if: steps.state.outputs.outcome != 'success'
+        if: always() && steps.state.outputs.outcome != 'success'
         run: exit 1
