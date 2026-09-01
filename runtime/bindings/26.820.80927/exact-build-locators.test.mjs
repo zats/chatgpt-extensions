@@ -103,6 +103,7 @@ test("pins mapped initializers, exports, and activation phase", async () => {
     "ChatGptCodeBlock: chatgptCodeBlockModule.ChatGptCodeBlock",
     "LocalConversationItem: localConversationItemModule.S",
     "CloudConversationTurn: chatgptThreadVisibilityModule.s",
+    "RemoteSidebarThreadRow: appInitialModule.Cs",
     "useScopeValue: appInitialModule.GGt",
     "threadHostIdByConversation: appInitialModule.tdt",
     "accountState: appInitialModule.Iwt",
@@ -186,5 +187,17 @@ test(
       ),
       "ChatGPT primary window appearance discriminator",
     );
+    const appInitial = await readFile(
+      join(researchTree, "webview/assets/app-initial-CpK4W6kT.js"),
+      "utf8",
+    );
+    for (const locator of [
+      "function SPl(e){let t=(0,CPl.c)(93),{task:n,titlePrefix:r,titleSuffix:i,secondaryContent:a",
+      "transformContextMenuItems:F,variant:I,onArchiveStart:L,onArchiveSuccess:R,onArchiveError:z,dataAttributes:B}=e",
+      "task:e.task",
+      "SPl as Cs",
+    ]) {
+      assert.equal(appInitial.split(locator).length - 1, 1, locator);
+    }
   },
 );

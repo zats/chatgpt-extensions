@@ -10,7 +10,7 @@ for this app identity:
 - source archive length: `595263123` bytes
 - source archive Ed25519 signature: `9ig6An9v69dIpSgoSRGs6PoTr4sP4Dug9HcyWm4vMEB7W4owrEQT5cN+csTux1MdN70stJXuq1U6KRxzqBw9CQ==`
 
-`host.js` is the exact v4 host artifact for this app build. Its SHA-256 is
+`host.js` is the exact host artifact for this app build. Its SHA-256 is
 `b69b974d320b8ec59b9167ba9ea47e4d037ad2608e42ddbedab855de9bf1e37e`.
 It is now stored in this repository. The v5 launcher does not read a local v4
 installation or a `versions-lock.json` file.
@@ -52,15 +52,41 @@ first-party suggestion owner. If an upstream feature gate returns before it
 creates that owner, the boundary supplies an empty native surface only while an
 extension suggestion transformer is registered.
 
+The exact `RemoteSidebarThreadRow` is `URc`, exported as `Fc` from
+`app-initial-B6Gk5KCN.js`. Its pinned contract includes `task`,
+`transformContextMenuItems`, and the direct task-row export. The adapter uses
+this owner for canonical remote task identity, selected-thread state, menu
+transforms, title-prefix contributions, and priority-indicator contributions.
+
 The thread-row priority contribution does not reserve a new leading title slot.
 With no native priority, the adapter passes the extension mount through
 `overlayMetaContent` and places it as an absolute row child. With a native
 priority, it composes both views through `priorityIndicatorNode`. The live gate
 proved one 3 px bar with a 3 px title gap, full 30 px standard and cloud row
 height, full 53.5 px activity row height, and equal x 16 title alignment for
-colored and uncolored rows.
+colored and uncolored rows. That live record covers the prior persisted and
+signed-in ChatGPT rows. Adapter `1.0.5` adds the exact Remote Codex row and its
+deterministic standard and activity probe. It requires a new live-gate result
+before the Remote Codex layout is recorded as passed.
 
 The compiled Native Main Probe is part of the exact live gate. It receives the
 same Electron singleton as ChatGPT, Node `24.14.0`, and the bundled `objc-js`.
 It also proves renderer-to-main calls and cancellation, targeted and broadcast
 events, caller ownership, resource release, and deferred cleanup.
+
+## Artifacts and validation
+
+| Manifest artifact | SHA-256 |
+| --- | --- |
+| `host.js` | `b69b974d320b8ec59b9167ba9ea47e4d037ad2608e42ddbedab855de9bf1e37e` |
+| `host-source-patch.cjs` | `6ab6c4e5f1c3fcf5a18cafed7097d0567ba8d52e45b527173e7ecb3f4ba51674` |
+| `renderer-entry.ts` | `7e0a00faed7c4946261514442550a7e7ddf316f8080e400bfb123aa61d83e69d` |
+| `renderer-adapter.ts` | `4c971623b753f3c57ed628c5a703a7fe3fc87185e3f4db82cee59ebef8b7151d` |
+| `renderer-host.js` | `8541c787474f01c2838ebf31418a48258e9149795ccfddedfb20007d37bde31f` |
+
+The exact patch produces
+`3b1a9bd9c1ac5179d89b26e7d26bb8ea60d2d931dbb622342bcb52d0ccb4023c`.
+Adapter `1.0.5` passes the repository static, type, and build checks. Its
+product probe has one total 55-second UI deadline. Settings search remains
+inside the active Settings owner after a remount. The deterministic row fixture
+uses first-party persisted, Remote Codex, and signed-in ChatGPT row owners.

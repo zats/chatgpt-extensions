@@ -7,7 +7,7 @@
   "downloadLength": 588709155,
   "downloadEdSignature": "rASGXIGH+/HSYuW/EQ+9DGb67PzqtWr84+rz8IE3N54GKllfz/hVTAPXnaQpbcz8HPVXkvHH2v1DtZpQimMYCQ==",
   "apiVersion": "0.2.0",
-  "adapterVersion": "1.0.1",
+  "adapterVersion": "1.0.2",
   "artifacts": {
     "host": {
       "path": "host.js",
@@ -15,7 +15,7 @@
     },
     "patch": {
       "path": "host-source-patch.cjs",
-      "sha256": "2a737e228e73eea2e2c7a58a3d91b538d730b83dbf5538ac1ce82a0f8d0f13db"
+      "sha256": "582c5ce25d0ccb9af117f27e7fe0fa9e47f9ebd21e78fb87417cfa7780954601"
     },
     "rendererEntry": {
       "path": "renderer-entry.ts",

@@ -490,6 +490,7 @@ ${threadListContextSource}
             : undefined,
       Iwt: { authenticatedAccountId: "account-a" },
       bzt: {},
+      Cs: function RemoteSidebarThreadRow() {},
     };
     const renderThreadTree = (_tree, context) => context;
 ${threadMenuContextSource}
@@ -571,10 +572,13 @@ ${nativeExportsSource}
     return {
       ThreadMenuBoundary,
       ExecutionSidebarThreadBoundary,
+      RemoteSidebarThreadBoundary,
       SidebarThreadBoundary,
       threadContextForMenuProps,
       isExecutionSidebarThreadRow,
       threadContextForExecutionSidebarProps,
+      isRemoteCodexSidebarThreadRow,
+      threadContextForRemoteSidebarProps,
       isChatGptSidebarThreadRow,
       threadContextForSidebarProps,
       isSidebarThreadMenuAdapter,
@@ -719,6 +723,14 @@ test("exact first-party UI owners expose extension transforms and controls", () 
     "ExactConversationItemBoundary",
     "ExactCloudConversationItemBoundary",
     "CloudConversationTurn: chatgptThreadVisibilityModule.s",
+    "RemoteSidebarThreadRow: appInitialModule.Cs",
+    "RemoteSidebarThreadBoundary",
+    "threadContextForRemoteSidebarProps",
+    "data-cgptx-settings-page-owner",
+    "const probeDeadline = Date.now() + 55_000",
+    "Math.min(probeDeadline, Date.now() + timeout)",
+    "exactRichProbeCommitted",
+    "exactRichFallbackSnapshot",
     "type === native.Composer?.AdaptiveFooter",
     "isExactComposerUtilityOwner(type, props)",
     "isExactComposerAttachmentsOwner(type, props)",
@@ -943,7 +955,7 @@ test("exact host patch scopes same thread ids by ChatGPT host identity", async (
       threadId: "thread-1",
       title: "Remote thread",
       mode: "codex",
-      location: "local",
+      location: "remote",
       selected: true,
     });
     assert.equal(host.sameThreadContext(headerContext, explicitHostContext), false);
@@ -971,7 +983,7 @@ test("exact host patch scopes same thread ids by ChatGPT host identity", async (
       threadId: "thread-3",
       title: "Third thread",
       mode: "codex",
-      location: "local",
+      location: "remote",
       selected: true,
     });
 
@@ -1005,7 +1017,7 @@ test("exact host patch scopes same thread ids by ChatGPT host identity", async (
         threadId: "thread-2",
         title: "Second thread",
         mode: "codex",
-        location: "local",
+        location: "remote",
       },
     );
     assert.equal(host.getNative().accountState.authenticatedAccountId, "account-a");
@@ -1407,6 +1419,53 @@ test("priority-indicator contributions follow the full row height without shifti
 
 test("signed-in sidebar owners use canonical cloud identity and exact Q9 shapes", async () => {
   const host = new Function(patch().source)();
+  const remoteTaskProps = {
+    task: {
+      id: "remote-task",
+      title: "Remote task",
+      archived: false,
+      has_unread_turn: true,
+    },
+    titlePrefix: null,
+    dataAttributes: {},
+    onClose() {},
+    isActive: false,
+    isPinned: true,
+  };
+  assert.equal(
+    host.isRemoteCodexSidebarThreadRow(
+      host.getNative().RemoteSidebarThreadRow,
+      remoteTaskProps,
+    ),
+    true,
+  );
+  assert.equal(
+    host.isRemoteCodexSidebarThreadRow(function OtherRow() {}, remoteTaskProps),
+    false,
+  );
+  assert.deepEqual(
+    host.threadContextForRemoteSidebarProps(remoteTaskProps, {
+      authenticatedAccountId: "authenticated-account",
+      accountId: "workspace-account",
+      accountStructure: "workspace",
+    }),
+    {
+      scope: "cloud",
+      surface: "sidebar",
+      accountId: "authenticated-account",
+      workspaceId: "workspace-account",
+      threadId: "remote-task",
+      title: "Remote task",
+      mode: "codex",
+      location: "remote",
+      selected: false,
+      pinned: true,
+      unread: true,
+      archived: false,
+      temporary: false,
+    },
+  );
+  assert.equal(host.threadContextForRemoteSidebarProps(remoteTaskProps, {}), null);
   const sidebarRow = new Function(
     "props",
     `

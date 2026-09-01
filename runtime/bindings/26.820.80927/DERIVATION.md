@@ -54,6 +54,7 @@ The base module is `webview/assets/app-initial-CpK4W6kT.js`.
 | sidebar row | none | `Ou` |
 | tooltip | none | `l4` |
 | close X icon | none | `nmt` |
+| Remote Codex task row | `SPl()` | `Cs` |
 
 `HGt` is the full scope-object hook. It is not the keyed scope-value hook.
 The Composer namespace is internal and has no target export.
@@ -97,7 +98,10 @@ same `availableListPoints` set controls discovery and direct registration.
 ## Pinned source evidence
 
 `exact-build-locators.test.mjs` pins the direct bootstrap, settings, icon, menu,
-composer, and rich-content module paths and file digests.
+composer, Remote Codex task-row, and rich-content module paths and file
+digests. The task-row proof pins its `task`, context-menu transform, and export
+contracts. The adapter uses that exact owner for remote identity, selection,
+menu, title-prefix, and priority-indicator contributions.
 `rich-content-binding-verifier.mjs` pins four exact rich-content assets:
 
 - `app-initial-CpK4W6kT.js`: `9e85f5705a7640f90281a3e31daa63ef849d97675ad53a99d72c1a2b6ef14634`
@@ -112,20 +116,24 @@ Each semantic anchor must occur exactly once after its file digest matches.
 | Manifest artifact | SHA-256 |
 | --- | --- |
 | `host.js` | `66379d40f549ecd2ca9ebe1fe92ce7f8fe97db7f17427f435ee8fec5e2fc5192` |
-| `host-source-patch.cjs` | `9656d815fb5d3a497939f9de26db1bfdd355585de7002e8c4d450dc4863a7cff` |
+| `host-source-patch.cjs` | `582c5ce25d0ccb9af117f27e7fe0fa9e47f9ebd21e78fb87417cfa7780954601` |
 | `renderer-entry.ts` | `2a33b872d6fbd5041ec5029185715712f97aa1999e9f931b1f1e131e7f5fc583` |
 | `renderer-adapter.ts` | `0607c2c0663defe08397892a051877f8c34a267f78379a494677c42dceb484cc` |
 | `renderer-host.js` | `88a66437a70359a965ddf5a81e9af6e578e395080cd106a6d2ae09099fed8be8` |
 
 The exact patch accepts the checked-in host digest above and produces
-`6f2e0f6f26b86b7c33169bc05b53a4e45062747e23a731897b7ae82d4a2dd9d3`.
+`a69a9c274a4a139eb137713e3a51e407e5e7ac8588372509040d913a880c400d`.
 
 ## Validation
 
-The complete binding-local suite passes 47 tests against the exact research
-tree. It covers exact module and digest checks, unique semantic anchors, patch
-fail-closed behavior, AppShell readiness, adapter discovery and lifecycle,
-direct rejection of unavailable Home transforms, rich-content definitions, UI
-owners, settings, and Thread Colors identity.
+Adapter `1.0.2` passes the complete binding-local suite against the exact
+research tree. The suite covers exact module and digest checks, unique semantic
+anchors, patch fail-closed behavior, AppShell readiness, adapter discovery and
+lifecycle, direct rejection of unavailable Home transforms, rich-content
+definitions, UI owners, settings, and local and remote Thread Colors identity.
+The direct product probe has one total 55-second UI deadline, keeps Settings
+search inside the active Settings owner across remounts, and checks standard
+and activity layouts through deterministic first-party local and Remote Codex
+rows.
 The renderer bundle was rebuilt with the repository build settings for
 Chrome 151. No app was launched for this preparation.
