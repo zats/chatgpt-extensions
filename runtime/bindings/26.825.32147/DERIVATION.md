@@ -67,7 +67,7 @@ occurs exactly once in the supplied tree.
 | Manifest artifact | SHA-256 |
 | --- | --- |
 | `host.js` | `2cb3022811c8d0bd45b51af0acf6d4e43203edd6492d43be13a6c4a02b192123` |
-| `host-source-patch.cjs` | `9a4a8ebdb5fa75f217ea377b0ac0e545f383e188891582143c2a0b3a7c0a68dd` |
+| `host-source-patch.cjs` | `8541843fbd2c25afc9d369ba49a04e1960dcca2bdb679a7c445e6a631c13ca51` |
 | `renderer-entry.ts` | `fd51e9d461ccdc88ab4f0788f1bec3c5eda2a3e1c2fc9b752487117b70ff63b1` |
 | `renderer-adapter.ts` | `819351a1e5a54c9f11c91858c4afe35c936d0292af798c03af1b83780f05adfc` |
 | `renderer-host.js` | `19e949d47597dc663bf76c136fd1c3d08fb0e889c4a699ec0e4850dcdb65679c` |

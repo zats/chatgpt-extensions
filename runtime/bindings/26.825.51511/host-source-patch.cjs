@@ -79,22 +79,12 @@ const exactUiBridgeSource = String.raw`  const exactUiTransformers = Object.free
   let runExactProductExtensionRealUiProbe = null;
 
   function primaryAppShellReady() {
-    const root = document.querySelector(
-      'main[data-app-shell-main-surface="default"]',
-    );
+    const root = document.querySelector('main[data-app-shell-main-surface]');
     if (!(root instanceof HTMLElement) || !root.isConnected) return false;
-    const header = root.querySelector(
-      'header[data-pip-obstacle="app-shell-header"]',
-    );
     const mainFocusArea = root.querySelector(
       '[data-app-shell-focus-area="main"]',
     );
-    return (
-      header instanceof HTMLElement &&
-      mainFocusArea instanceof HTMLElement &&
-      root.contains(header) &&
-      root.contains(mainFocusArea)
-    );
+    return mainFocusArea instanceof HTMLElement && root.contains(mainFocusArea);
   }
 
   function subscribeExactUi(listener) {

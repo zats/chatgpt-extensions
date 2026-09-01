@@ -83,13 +83,13 @@ const threadMenuBoundarySource = `    function ThreadMenuBoundary({ child }) {
       return renderThreadTree(child.type(child.props), context, intl);
     }`;
 
-const nativeExportsSource = `      useIntl: appInitialModule.c2t,
-      useScope: appInitialModule.GUt,
-      ApplicationScope: appInitialModule.Ezt,`;
+const nativeExportsSource = `      useIntl: appInitialModule.Pzt,
+      useScope: appInitialModule.HGt,
+      ApplicationScope: appInitialModule.bzt,`;
 
 const structuralAnchorFiller = `
   const TOOLBAR_BREADCRUMB_MODULE =
-    "./assets/toolbar-breadcrumb-DGLz3tdB.js";
+    "./assets/toolbar-breadcrumb-D6g0pyfy.js";
   const EXTENSIONS_SETTINGS_PANE_ID = "extensions.installed";
 
   const transformers = [];
@@ -114,10 +114,10 @@ const structuralAnchorFiller = `
     plusIconModule.t();
 
       ThreadMenu: threadMenuModule.t,
-      ColorPicker: appInitialModule.us,
+      ColorPicker: appInitialModule.ec,
       startChatGptSignIn: authModule.o,
 
-        ["settings", appInitialModule.bot],
+        ["settings", appInitialModule.B8],
 
       appearance: makeAppearanceApi(extId),
       settings: makeSettingsApi(extId),
@@ -426,13 +426,13 @@ ${threadListContextSource}
     const settingsVisibilityCalls = [];
     const settingsVisibilityModule = {
       i() {
+        settingsVisibilityCalls.push("unrelated");
+      },
+      t() {
         settingsVisibilityCalls.push("icons");
         settingsSectionIcons = {
           "general-settings": "native-general-icon",
         };
-      },
-      t() {
-        settingsVisibilityCalls.push("visibility");
       },
       get r() {
         return settingsSectionIcons;
@@ -465,18 +465,18 @@ ${threadListContextSource}
       useLayoutEffect(effect) { layoutCleanups.push(effect()); },
     };
     const appInitialModule = {
-      c2t: () => ({}),
-      GUt: () => ({}),
-      JUt: (selector, ...arguments_) =>
+      Pzt: () => ({}),
+      HGt: () => ({}),
+      GGt: (selector, ...arguments_) =>
         typeof selector === "function" ? selector(...arguments_) : selector,
-      j2: (conversationId) =>
+      tdt: (conversationId) =>
         conversationId === "thread-1"
           ? "local"
           : conversationId === "thread-2"
             ? "remote"
             : undefined,
-      uwt: { authenticatedAccountId: "account-a" },
-      Ezt: {},
+      Iwt: { authenticatedAccountId: "account-a" },
+      bzt: {},
     };
     const renderThreadTree = (_tree, context) => context;
 ${threadMenuContextSource}
@@ -575,7 +575,7 @@ ${nativeExportsSource}
       getNative: () => native,
     };
   }
-  const host = { version: "26.825.32147" };
+  const host = { version: "26.820.80927" };
   return {
     host,
     sameThreadContext,
@@ -618,8 +618,8 @@ function withoutOwn(value, key) {
 
 function patch(source = fixtureSource()) {
   return patchBindingHostSource({
-    appVersion: "26.825.32147",
-    appBuild: "7303",
+    appVersion: "26.820.80927",
+    appBuild: "7271",
     originalDigest: sha256(source),
     source,
   });
@@ -627,13 +627,13 @@ function patch(source = fixtureSource()) {
 
 test("settings search initializes and guards the native icon map", () => {
   const result = patch();
-  const iconInitializer = result.source.indexOf("settingsVisibilityModule.i();");
+  const iconInitializer = result.source.indexOf("settingsVisibilityModule.t();");
   const iconCapture = result.source.indexOf(
     "settingsSectionIcons: settingsVisibilityModule.r",
   );
   assert.ok(iconInitializer >= 0);
   assert.ok(iconInitializer < iconCapture);
-  assert.doesNotMatch(result.source, /settingsVisibilityModule\.t\(\)/);
+  assert.doesNotMatch(result.source, /settingsVisibilityModule\.i\(\)/);
   assert.doesNotMatch(
     result.source,
     /settingsSectionIcons\?\.\[result\.sectionSlug\]/,
@@ -673,16 +673,10 @@ test("exact first-party UI owners expose extension transforms and controls", () 
   const result = patch();
   assert.doesNotThrow(() => new Function(result.source));
   for (const marker of [
-    "home-suggestion-surface-DYzWjNWQ.js",
-    "home-ambient-suggestions-content-BsHgi12z.js",
-    "home-task-suggestions-BS_HlNsl.js",
-    "codex-home-announcements-BEqpJiFL.js",
-    "composer-utility-bar-DIkeCMt4.js",
-    "chatgpt-markdown-view-Be5HLyGH.js",
-    "conversation-blocks-CaWT0vxQ.js",
-    "viewer-BPgEYBcW.js",
-    "transformSuggestions",
-    "transformAnnouncements",
+    "composer-utility-bar-BApXxy3L.js",
+    "chatgpt-thread-visibility-p3PeKx_R.js",
+    "subagent-activity-chip-group-DZBSwHRQ.js",
+    "chatgpt-code-block-C_pK8Bfv.js",
     "transformSidebarDestinations",
     "transformProductModeMenu",
     "registerComposerAction",
@@ -690,25 +684,8 @@ test("exact first-party UI owners expose extension transforms and controls", () 
     "registerAssistantContentReference",
     "registerAssistantCodeBlock",
     "registerConversationItem",
-    "HomeSuggestionSurface",
-    "ExactHomeAmbientSuggestionBoundary",
-    "isExactHomeAmbientSuggestionOwner(type, props)",
-    "ExactHomeTaskSuggestionBoundary",
-    "isExactHomeTaskSuggestionOwner(type, props)",
-    "HomeTaskSuggestions: homeTaskSuggestionsModule.HomeTaskSuggestions",
-    "ExactHomePageBoundary",
-    "isExactHomePageOwner(type, props)",
-    "exactHomeSuggestionOwnerPropsInTree",
-    "injectExactHomeSuggestionSlot",
-    "--thread-content-max-width:42rem",
-    "ambient-suggestion-set-status",
-    "ambient-suggestions-refresh",
-    "exactUiTransformers.suggestions.length === 0",
-    "HomeBannerController",
     "availableDestinations: exactSidebarDestinationItems",
     "sidebarElectron.productMode.trigger",
-    "data-cgptx-home-suggestion",
-    "data-cgptx-home-announcement",
     "data-cgptx-sidebar-destination",
     "data-cgptx-product-menu-item",
     "data-cgptx-product-mode-trigger",
@@ -724,12 +701,14 @@ test("exact first-party UI owners expose extension transforms and controls", () 
     "const turnContext = native.useCurrentTurnContext();",
     'typeof props.codeBlockInfo === "string"',
     "directiveProps?.directiveId",
-    "ChatGptCodeBlock: appInitialModule.Iw",
+    "isExactAssistantCodeBlockOwner(type, props)",
+    "ChatGptCodeBlock: chatgptCodeBlockModule.ChatGptCodeBlock",
     "ExactConversationItemBoundary",
     "ExactCloudConversationItemBoundary",
-    "CloudConversationTurn: cloudConversationViewerModule.r",
-    "type === native.Composer.AdaptiveFooter",
+    "CloudConversationTurn: chatgptThreadVisibilityModule.s",
+    "type === native.Composer?.AdaptiveFooter",
     "isExactComposerUtilityOwner(type, props)",
+    "isExactComposerAttachmentsOwner(type, props)",
     "exactCloudAccountIdentity",
     "exactRichRevisions",
     "exactRichRevision(entry, context.ownerId)",
@@ -762,6 +741,15 @@ test("exact first-party UI owners expose extension transforms and controls", () 
   ]) {
     assert.ok(result.source.includes(marker), `missing exact UI marker: ${marker}`);
   }
+  for (const unavailable of [
+    "home-suggestion-surface-DYzWjNWQ.js",
+    "home-task-suggestions-BS_HlNsl.js",
+    "chatgpt-markdown-view-Be5HLyGH.js",
+    "HomeTaskSuggestions: homeTaskSuggestionsModule.HomeTaskSuggestions",
+    "HomeBannerController: homeBannerModule.t",
+  ]) {
+    assert.equal(result.source.includes(unavailable), false, unavailable);
+  }
   assert.equal(
     result.source.includes("container.remove();") &&
       result.source.includes("if (!container.hasChildNodes())"),
@@ -793,7 +781,7 @@ test("exact first-party UI owners expose extension transforms and controls", () 
   );
 });
 
-test("primary AppShell readiness accepts each first-party main surface", () => {
+test("primary AppShell readiness accepts every mounted main surface", () => {
   const result = patch();
   const start = result.source.indexOf("  function primaryAppShellReady() {");
   const end = result.source.indexOf("\n\n  function subscribeExactUi", start);
@@ -849,16 +837,25 @@ test("primary AppShell readiness accepts each first-party main surface", () => {
     ),
     false,
   );
-  const detachedRoot = new FakeHTMLElement();
-  detachedRoot.querySelector = (selector) =>
+  assert.equal(
+    evaluate(
+      documentFor(new FakeHTMLElement({ children: [mainFocus] })),
+      FakeHTMLElement,
+    ),
+    true,
+  );
+  const unownedFocusRoot = new FakeHTMLElement();
+  unownedFocusRoot.querySelector = (selector) =>
     selector === '[data-app-shell-focus-area="main"]' ? mainFocus : null;
-  assert.equal(evaluate(documentFor(detachedRoot), FakeHTMLElement), false);
+  assert.equal(evaluate(documentFor(unownedFocusRoot), FakeHTMLElement), false);
 
   const queried = [];
   const root = new FakeHTMLElement({ children: [mainFocus] });
   assert.equal(evaluate(documentFor(root, queried), FakeHTMLElement), true);
   assert.deepEqual(queried, [rootSelector]);
-  assert.deepEqual(root.queries, ['[data-app-shell-focus-area="main"]']);
+  assert.deepEqual(root.queries, [
+    '[data-app-shell-focus-area="main"]',
+  ]);
   assert.match(
     result.source,
     /captureDynamicThreadItemsFromOpenMenus,\n\s+primaryAppShellReady,\n\s+richContentOwnerHits:/,
@@ -1843,31 +1840,28 @@ test("exact host patch fails closed on target, digest, anchor, and reapply chang
   assert.throws(
     () =>
       patchBindingHostSource({
-        appVersion: "26.825.51512",
-        appBuild: "7303",
+        appVersion: "26.820.80928",
+        appBuild: "7271",
         originalDigest,
         source,
       }),
-    /supports only ChatGPT 26\.825\.32147 \(7303\)/,
+    /supports only ChatGPT 26\.820\.80927 \(7271\)/,
   );
   assert.throws(
     () =>
       patchBindingHostSource({
-        appVersion: "26.825.32147",
-        appBuild: "7303",
+        appVersion: "26.820.80927",
+        appBuild: "7271",
         originalDigest: "0".repeat(64),
         source,
       }),
     /no longer matches its validated digest/,
   );
 
-  const missingSettingsInitializer = source.replace(
-    "    settingsVisibilityModule.t();\n    settingsLoadingModule.n();",
-    "",
-  );
+  const missingNativeExports = source.replace(nativeExportsSource, "");
   assert.throws(
-    () => patch(missingSettingsInitializer),
-    /settings icon module initializer occurred 0 times/,
+    () => patch(missingNativeExports),
+    /ChatGPT thread and account selector exports occurred 0 times/,
   );
 
   const missingAnchor = source.replace(sameThreadContextSource, "");
@@ -1882,11 +1876,11 @@ test("exact host patch fails closed on target, digest, anchor, and reapply chang
   assert.throws(
     () =>
       patchBindingHostSource({
-        appVersion: "26.825.32147",
-        appBuild: "7303",
+        appVersion: "26.820.80927",
+        appBuild: "7271",
         originalDigest: first.digest,
         source: first.source,
       }),
-    /settings icon module initializer occurred 0 times/,
+    /occurred 0 times/,
   );
 });

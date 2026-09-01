@@ -548,6 +548,42 @@ function primaryAppShellReadyExpression() {
   );
 }
 
+async function waitForPrimaryUiReadiness({
+  evaluate,
+  isCurrent,
+  wait,
+  now = Date.now,
+  timeoutMilliseconds = 20_000,
+  pollMilliseconds = 50,
+}) {
+  const deadline = now() + timeoutMilliseconds;
+  while (isCurrent() && now() < deadline) {
+    const evaluation = Promise.resolve()
+      .then(evaluate)
+      .then(
+        (value) => ({ status: "fulfilled", value: value === true }),
+        () => ({ status: "rejected", value: false }),
+      );
+    let outcome;
+    while (outcome === undefined && isCurrent() && now() < deadline) {
+      const remaining = deadline - now();
+      outcome = await Promise.race([
+        evaluation,
+        wait(Math.max(1, Math.min(pollMilliseconds, remaining))).then(
+          () => undefined,
+        ),
+      ]);
+    }
+    if (outcome === undefined || !isCurrent() || now() >= deadline) {
+      return false;
+    }
+    if (outcome.status === "rejected") return false;
+    if (outcome.value) return true;
+    await wait(Math.max(1, Math.min(pollMilliseconds, deadline - now())));
+  }
+  return false;
+}
+
 function isCurrentRendererDocument(lifecycle, contents, document) {
   return (
     lifecycle?.isCurrent(contents, document.id) === true &&
@@ -1808,20 +1844,16 @@ function initialize() {
     document,
     timeoutMilliseconds = 20_000,
   ) {
-    const deadline = Date.now() + timeoutMilliseconds;
     const expression = primaryAppShellReadyExpression();
-    while (
-      rendererLifecycle?.isCurrent(contents, document.id) &&
-      Date.now() < deadline
-    ) {
-      try {
-        if (await contents.executeJavaScript(expression)) return true;
-      } catch {
-        return false;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    return false;
+    return waitForPrimaryUiReadiness({
+      evaluate: () => contents.executeJavaScript(expression),
+      isCurrent: () =>
+        rendererLifecycle?.isCurrent(contents, document.id) === true &&
+        contents.isDestroyed?.() !== true,
+      wait: (milliseconds) =>
+        new Promise((resolve) => setTimeout(resolve, milliseconds)),
+      timeoutMilliseconds,
+    });
   }
 
   async function waitForThreadColorPersistence(thread, timeoutMilliseconds) {
@@ -2829,5 +2861,6 @@ module.exports = Object.freeze({
   startRendererLifecycle,
   uiSurfaceInteractionReady,
   uiSurfaceProbeEventFile,
+  waitForPrimaryUiReadiness,
   writeCurrentRendererDocumentDiagnostics,
 });

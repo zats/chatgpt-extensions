@@ -2,8 +2,8 @@
 
 const crypto = require("node:crypto");
 
-const targetAppVersion = "26.825.32147";
-const targetAppBuild = "7303";
+const targetAppVersion = "26.820.80927";
+const targetAppBuild = "7271";
 
 function lines(...values) {
   return values.join("\n");
@@ -79,12 +79,17 @@ const exactUiBridgeSource = String.raw`  const exactUiTransformers = Object.free
   let runExactProductExtensionRealUiProbe = null;
 
   function primaryAppShellReady() {
-    const root = document.querySelector('main[data-app-shell-main-surface]');
+    const root = document.querySelector(
+      'main[data-app-shell-main-surface]',
+    );
     if (!(root instanceof HTMLElement) || !root.isConnected) return false;
     const mainFocusArea = root.querySelector(
       '[data-app-shell-focus-area="main"]',
     );
-    return mainFocusArea instanceof HTMLElement && root.contains(mainFocusArea);
+    return (
+      mainFocusArea instanceof HTMLElement &&
+      root.contains(mainFocusArea)
+    );
   }
 
   function subscribeExactUi(listener) {
@@ -1220,6 +1225,25 @@ const exactUiHookSource = String.raw`    const exactAssistantMarkdownContext =
       );
     }
 
+    function isExactAssistantCodeBlockOwner(type, props) {
+      if (
+        typeof type !== "function" ||
+        typeof props?.content !== "string" ||
+        !Number.isInteger(props?.codeBlockIndex) ||
+        typeof props?.isCodeFenceOpen !== "boolean" ||
+        !props.turnContext ||
+        typeof props.turnContext !== "object"
+      ) {
+        return false;
+      }
+      const source = Function.prototype.toString.call(type);
+      return (
+        source.includes("code_blocks_auto_preview") &&
+        source.includes("shouldBlockExternalEgress") &&
+        source.includes("turnContext")
+      );
+    }
+
     function ExactAssistantCodeBlockBoundary({ type, props, elementKey }) {
       exactRichOwnerHits.assistantCodeBlock += 1;
       const turnContext = native.useCurrentTurnContext();
@@ -1579,7 +1603,7 @@ const exactUiHookSource = String.raw`    const exactAssistantMarkdownContext =
                   },
                   firstParty: null,
                 }),
-                native.jsxRuntime.jsx(native.ChatGptMarkdownView, {
+                native.jsxRuntime.jsx(native.StreamingMarkdown, {
                   conversationId: probeConversationId,
                   turnId: probeTurnId,
                   hostId: "local",
@@ -1589,7 +1613,7 @@ const exactUiHookSource = String.raw`    const exactAssistantMarkdownContext =
                   children:
                     ':chatgptx-probe-directive-unregistered{outcome="unregistered"}',
                 }),
-                native.jsxRuntime.jsx(native.ChatGptMarkdownView, {
+                native.jsxRuntime.jsx(native.StreamingMarkdown, {
                   conversationId: probeConversationId,
                   turnId: probeTurnId,
                   hostId: "local",
@@ -1599,7 +1623,7 @@ const exactUiHookSource = String.raw`    const exactAssistantMarkdownContext =
                   children:
                     ':chatgptx-probe-directive-fallback{outcome="rendererError"}',
                 }),
-                native.jsxRuntime.jsx(native.ChatGptMarkdownView, {
+                native.jsxRuntime.jsx(native.StreamingMarkdown, {
                   conversationId: probeConversationId,
                   turnId: probeTurnId,
                   hostId: "local",
@@ -1608,7 +1632,7 @@ const exactUiHookSource = String.raw`    const exactAssistantMarkdownContext =
                   children:
                     ":" + native.contentReferenceDirectiveName + '{index="0"}',
                 }),
-                native.jsxRuntime.jsx(native.ChatGptMarkdownView, {
+                native.jsxRuntime.jsx(native.StreamingMarkdown, {
                   conversationId: probeConversationId,
                   turnId: probeTurnId,
                   hostId: "local",
@@ -1617,7 +1641,7 @@ const exactUiHookSource = String.raw`    const exactAssistantMarkdownContext =
                   children:
                     ":" + native.contentReferenceDirectiveName + '{index="1"}',
                 }),
-                native.jsxRuntime.jsx(native.ChatGptMarkdownView, {
+                native.jsxRuntime.jsx(native.StreamingMarkdown, {
                   conversationId: probeConversationId,
                   turnId: probeTurnId,
                   hostId: "local",
@@ -1626,7 +1650,7 @@ const exactUiHookSource = String.raw`    const exactAssistantMarkdownContext =
                   children:
                     ":" + native.contentReferenceDirectiveName + '{index="2"}',
                 }),
-                native.jsxRuntime.jsx(native.ChatGptMarkdownView, {
+                native.jsxRuntime.jsx(native.StreamingMarkdown, {
                   conversationId: probeConversationId,
                   turnId: probeTurnId,
                   hostId: "local",
@@ -1635,7 +1659,7 @@ const exactUiHookSource = String.raw`    const exactAssistantMarkdownContext =
                   children:
                     ":" + native.contentReferenceDirectiveName + '{index="3"}',
                 }),
-                native.jsxRuntime.jsx(native.ChatGptMarkdownView, {
+                native.jsxRuntime.jsx(native.StreamingMarkdown, {
                   conversationId: probeConversationId,
                   turnId: probeTurnId,
                   hostId: "local",
@@ -1661,7 +1685,7 @@ const exactUiHookSource = String.raw`    const exactAssistantMarkdownContext =
                   },
                   elementKey: "chatgptx-rich-probe-streaming-code",
                 }),
-                native.jsxRuntime.jsx(native.ChatGptMarkdownView, {
+                native.jsxRuntime.jsx(native.StreamingMarkdown, {
                   conversationId: probeConversationId,
                   turnId: probeTurnId,
                   hostId: "local",
@@ -1673,7 +1697,7 @@ const exactUiHookSource = String.raw`    const exactAssistantMarkdownContext =
                     "chatgptx-fallback:nonMatch\n" +
                     codeFence,
                 }),
-                native.jsxRuntime.jsx(native.ChatGptMarkdownView, {
+                native.jsxRuntime.jsx(native.StreamingMarkdown, {
                   conversationId: probeConversationId,
                   turnId: probeTurnId,
                   hostId: "local",
@@ -1685,7 +1709,7 @@ const exactUiHookSource = String.raw`    const exactAssistantMarkdownContext =
                     "chatgptx-fallback:matcherError\n" +
                     codeFence,
                 }),
-                native.jsxRuntime.jsx(native.ChatGptMarkdownView, {
+                native.jsxRuntime.jsx(native.StreamingMarkdown, {
                   conversationId: probeConversationId,
                   turnId: probeTurnId,
                   hostId: "local",
@@ -3335,7 +3359,7 @@ const exactUiHookSource = String.raw`    const exactAssistantMarkdownContext =
 
     function isExactComposerFooterOwner(type, props) {
       return (
-        type === native.Composer.AdaptiveFooter ||
+        type === native.Composer?.AdaptiveFooter ||
         (
           typeof type === "function" &&
           Object.hasOwn(props ?? {}, "composerInput") &&
@@ -3361,6 +3385,22 @@ const exactUiHookSource = String.raw`    const exactAssistantMarkdownContext =
       );
     }
 
+    function isExactComposerAttachmentsOwner(type, props) {
+      if (
+        typeof type !== "function" ||
+        !Object.hasOwn(props ?? {}, "children") ||
+        !Object.hasOwn(props ?? {}, "hasVisibleAttachments") ||
+        !Object.hasOwn(props ?? {}, "spacing")
+      ) {
+        return false;
+      }
+      const source = Function.prototype.toString.call(type);
+      return (
+        source.includes("data-composer-attachments") &&
+        source.includes("data-visible-attachments")
+      );
+    }
+
     ExactUiMountComponent = ExactUiMount;
     ExactComposerActionComponent = ExactComposerAction;
     ExactRichContentBoundaryComponent = ExactRichContentBoundary;
@@ -3368,17 +3408,6 @@ const exactUiHookSource = String.raw`    const exactAssistantMarkdownContext =
 `;
 
 const patches = Object.freeze([
-  Object.freeze({
-    name: "settings icon module initializer",
-    before: lines(
-      "    settingsVisibilityModule.t();",
-      "    settingsLoadingModule.n();",
-    ),
-    after: lines(
-      "    settingsVisibilityModule.i();",
-      "    settingsLoadingModule.n();",
-    ),
-  }),
   Object.freeze({
     name: "settings search icon map guard",
     before: lines(
@@ -4986,46 +5015,37 @@ const patches = Object.freeze([
   Object.freeze({
     name: "ChatGPT thread and account selector exports",
     before: lines(
-      "      useIntl: appInitialModule.c2t,",
-      "      useScope: appInitialModule.GUt,",
-      "      ApplicationScope: appInitialModule.Ezt,",
+      "      useIntl: appInitialModule.Pzt,",
+      "      useScope: appInitialModule.HGt,",
+      "      ApplicationScope: appInitialModule.bzt,",
     ),
     after: lines(
-      "      useIntl: appInitialModule.c2t,",
-      "      useScope: appInitialModule.GUt,",
-      "      useScopeValue: appInitialModule.JUt,",
-      "      threadHostIdByConversation: appInitialModule.j2,",
-      "      accountState: appInitialModule.uwt,",
-      "      ApplicationScope: appInitialModule.Ezt,",
+      "      useIntl: appInitialModule.Pzt,",
+      "      useScope: appInitialModule.HGt,",
+      "      useScopeValue: appInitialModule.GGt,",
+      "      threadHostIdByConversation: appInitialModule.tdt,",
+      "      accountState: appInitialModule.Iwt,",
+      "      ApplicationScope: appInitialModule.bzt,",
     ),
   }),
   Object.freeze({
     name: "exact UI asset module constants",
     before: lines(
       "  const TOOLBAR_BREADCRUMB_MODULE =",
-      '    "./assets/toolbar-breadcrumb-DGLz3tdB.js";',
+      '    "./assets/toolbar-breadcrumb-D6g0pyfy.js";',
       '  const EXTENSIONS_SETTINGS_PANE_ID = "extensions.installed";',
     ),
     after: lines(
       "  const TOOLBAR_BREADCRUMB_MODULE =",
-      '    "./assets/toolbar-breadcrumb-DGLz3tdB.js";',
-      "  const HOME_SUGGESTION_SURFACE_MODULE =",
-      '    "./assets/home-suggestion-surface-DYzWjNWQ.js";',
-      "  const HOME_AMBIENT_SUGGESTIONS_MODULE =",
-      '    "./assets/home-ambient-suggestions-content-BsHgi12z.js";',
-      "  const HOME_TASK_SUGGESTIONS_MODULE =",
-      '    "./assets/home-task-suggestions-BS_HlNsl.js";',
-      "  const HOME_ANNOUNCEMENTS_MODULE =",
-      '    "./assets/codex-home-announcements-BEqpJiFL.js";',
-      '  const HOME_BANNER_MODULE = "./assets/banner-rS_k_4OE.js";',
+      '    "./assets/toolbar-breadcrumb-D6g0pyfy.js";',
       "  const COMPOSER_UTILITY_BAR_MODULE =",
-      '    "./assets/composer-utility-bar-DIkeCMt4.js";',
-      "  const CHATGPT_MARKDOWN_VIEW_MODULE =",
-      '    "./assets/chatgpt-markdown-view-Be5HLyGH.js";',
-      "  const CONVERSATION_BLOCKS_MODULE =",
-      '    "./assets/conversation-blocks-CaWT0vxQ.js";',
-      "  const CLOUD_CONVERSATION_VIEWER_MODULE =",
-      '    "./assets/viewer-BPgEYBcW.js";',
+      '    "./assets/composer-utility-bar-BApXxy3L.js";',
+      "  const CHATGPT_THREAD_VISIBILITY_MODULE =",
+      '    "./assets/chatgpt-thread-visibility-p3PeKx_R.js";',
+      "  const LOCAL_CONVERSATION_ITEM_MODULE =",
+      '    "./assets/subagent-activity-chip-group-DZBSwHRQ.js";',
+      "  const CHATGPT_CODE_BLOCK_MODULE =",
+      '    "./assets/chatgpt-code-block-C_pK8Bfv.js";',
       '  const EXTENSIONS_SETTINGS_PANE_ID = "extensions.installed";',
     ),
   }),
@@ -5094,7 +5114,7 @@ const patches = Object.freeze([
       "            type, props, elementKey: key,",
       "          }, key);",
       "        }",
-      "        if (type === native.ChatGptCodeBlock) {",
+      "        if (isExactAssistantCodeBlockOwner(type, props)) {",
       "          return originalJsx(ExactAssistantCodeBlockBoundary, {",
       "            type, props, elementKey: key,",
       "          }, key);",
@@ -5107,44 +5127,6 @@ const patches = Object.freeze([
       "        if (isExactCloudConversationItemOwner(type, props)) {",
       "          return originalJsx(ExactCloudConversationItemBoundary, {",
       "            type, props, elementKey: key,",
-      "          }, key);",
-      "        }",
-      "        if (isExactHomePageOwner(type, props)) {",
-      "          return originalJsx(ExactHomePageBoundary, {",
-      "            component: type, props,",
-      "          }, key);",
-      "        }",
-      "        if (type === native.HomeAmbientSuggestionsContent) {",
-      "          if (typeof props?.hostId === \"string\") exactHomeHostId = props.hostId;",
-      "          if (typeof props?.projectRoot === \"string\") exactHomeProjectRoot = props.projectRoot;",
-      "          exactHomePlan = props?.plan === true;",
-      "        }",
-      "        if (isExactHomeAmbientSuggestionOwner(type, props)) {",
-      "          return originalJsx(ExactHomeAmbientSuggestionBoundary, {",
-      "            component: type, props, elementKey: key,",
-      "          }, key);",
-      "        }",
-      "        if (type === native.HomeComposerAnnouncements) {",
-      "          exactHomeAnnouncementState = {",
-      "            entryPoint: props?.entryPoint ?? \"home\",",
-      "            homeComposerMode: props?.homeComposerMode ?? \"work\",",
-      "            isLocalModeRemote: props?.isLocalModeRemote === true,",
-      "          };",
-      "        }",
-      "        if (type === native.HomeSuggestionSurface && Array.isArray(props?.items)) {",
-      "          return originalJsx(ExactUiOwnerBoundary, {",
-      '            owner: "suggestions", type, props, elementKey: key,',
-      "          }, key);",
-      "        }",
-      "        if (isExactHomeTaskSuggestionOwner(type, props)) {",
-      "          if (typeof props.hostId === \"string\") exactHomeHostId = props.hostId;",
-      "          return originalJsx(ExactHomeTaskSuggestionBoundary, {",
-      "            component: native.HomeTaskSuggestions, props, elementKey: key,",
-      "          }, key);",
-      "        }",
-      "        if (type === native.HomeBannerController && Array.isArray(props?.entries)) {",
-      "          return originalJsx(ExactUiOwnerBoundary, {",
-      '            owner: "announcements", type, props, elementKey: key,',
       "          }, key);",
       "        }",
       "        if (isExactSidebarDestinationOwner(type, props)) {",
@@ -5172,7 +5154,7 @@ const patches = Object.freeze([
       '            owner: "utility", type, props, elementKey: key,',
       "          }, key);",
       "        }",
-      "        if (type === native.Composer.Attachments) {",
+      "        if (isExactComposerAttachmentsOwner(type, props)) {",
       "          return originalJsx(ExactUiOwnerBoundary, {",
       '            owner: "attachments", type, props, elementKey: key,',
       "          }, key);",
@@ -5194,15 +5176,10 @@ const patches = Object.freeze([
       "      settingsVisibilityModule,",
       "      settingsLoadingModule,",
       "      toolbarBreadcrumbModule,",
-      "      homeSuggestionSurfaceModule,",
-      "      homeAmbientSuggestionsModule,",
-      "      homeTaskSuggestionsModule,",
-      "      homeAnnouncementsModule,",
-      "      homeBannerModule,",
       "      composerUtilityBarModule,",
-      "      chatgptMarkdownModule,",
-      "      conversationBlocksModule,",
-      "      cloudConversationViewerModule,",
+      "      chatgptThreadVisibilityModule,",
+      "      localConversationItemModule,",
+      "      chatgptCodeBlockModule,",
       "    ] = await Promise.all([",
     ),
   }),
@@ -5218,15 +5195,10 @@ const patches = Object.freeze([
       "      import(SETTINGS_VISIBILITY_MODULE),",
       "      import(SETTINGS_LOADING_MODULE),",
       "      import(TOOLBAR_BREADCRUMB_MODULE),",
-      "      import(HOME_SUGGESTION_SURFACE_MODULE),",
-      "      import(HOME_AMBIENT_SUGGESTIONS_MODULE),",
-      "      import(HOME_TASK_SUGGESTIONS_MODULE),",
-      "      import(HOME_ANNOUNCEMENTS_MODULE),",
-      "      import(HOME_BANNER_MODULE),",
       "      import(COMPOSER_UTILITY_BAR_MODULE),",
-      "      import(CHATGPT_MARKDOWN_VIEW_MODULE),",
-      "      import(CONVERSATION_BLOCKS_MODULE),",
-      "      import(CLOUD_CONVERSATION_VIEWER_MODULE),",
+      "      import(CHATGPT_THREAD_VISIBILITY_MODULE),",
+      "      import(LOCAL_CONVERSATION_ITEM_MODULE),",
+      "      import(CHATGPT_CODE_BLOCK_MODULE),",
       "    ]);",
     ),
   }),
@@ -5238,12 +5210,13 @@ const patches = Object.freeze([
     ),
     after: lines(
       "    toolbarBreadcrumbModule.n();",
-      "    homeSuggestionSurfaceModule.n();",
-      "    homeAnnouncementsModule.r();",
-      "    homeBannerModule.n();",
-      "    chatgptMarkdownModule.n();",
-      "    conversationBlocksModule.p();",
-      "    cloudConversationViewerModule.i();",
+      "    appInitialModule.Eut();",
+      "    appInitialModule.Rwt();",
+      "    appInitialModule.iY();",
+      "    appInitialModule.CT();",
+      "    chatgptThreadVisibilityModule.E();",
+      "    chatgptThreadVisibilityModule.c();",
+      "    localConversationItemModule.C();",
       "    plusIconModule.t();",
     ),
   }),
@@ -5251,44 +5224,36 @@ const patches = Object.freeze([
     name: "exact UI native exports",
     before: lines(
       "      ThreadMenu: threadMenuModule.t,",
-      "      ColorPicker: appInitialModule.us,",
+      "      ColorPicker: appInitialModule.ec,",
       "      startChatGptSignIn: authModule.o,",
     ),
     after: lines(
       "      ThreadMenu: threadMenuModule.t,",
-      "      ColorPicker: appInitialModule.us,",
-      "      HomeSuggestionSurface: homeSuggestionSurfaceModule.t,",
-      "      HomeAmbientSuggestionsContent:",
-      "        homeAmbientSuggestionsModule.HomeAmbientSuggestionsContent,",
-      "      HomeTaskSuggestions: homeTaskSuggestionsModule.HomeTaskSuggestions,",
-      "      HomeComposerAnnouncements: homeAnnouncementsModule.t,",
-      "      HomeBannerController: homeBannerModule.t,",
-      "      Banner: appInitialModule.EL,",
-      "      Composer: appInitialModule.iB,",
-      "      ComposerHomeUtilityBar: appInitialModule.oB,",
+      "      ColorPicker: appInitialModule.ec,",
+      "      Banner: appInitialModule.ST,",
+      "      ComposerHomeUtilityBar: appInitialModule.bE,",
       "      ComposerUtilityBar: composerUtilityBarModule.ComposerUtilityBar,",
-      "      NativeButton: appInitialModule.ott,",
-      "      SidebarRow: appInitialModule.yp,",
-      "      Tooltip: appInitialModule.oet,",
-      "      StreamingMarkdown: appInitialModule.rC,",
-      "      ChatGptMarkdownView: chatgptMarkdownModule.t,",
-      "      contentReferenceDirectiveName: appInitialModule.TSt,",
-      "      TurnContext: appInitialModule.QE,",
-      "      useCurrentTurnContext: appInitialModule.eD,",
-      "      ReactDOMPortal: appInitialModule.B2t(),",
-      "      contentReferenceIndex: chatgptMarkdownModule.w,",
-      "      ChatGptCodeBlock: appInitialModule.Iw,",
-      "      LocalConversationItem: conversationBlocksModule.f,",
-      "      CloudConversationTurn: cloudConversationViewerModule.r,",
+      "      NativeButton: appInitialModule.qN,",
+      "      SidebarRow: appInitialModule.Ou,",
+      "      Tooltip: appInitialModule.l4,",
+      "      StreamingMarkdown: appInitialModule.aY,",
+      "      contentReferenceDirectiveName: appInitialModule.Hot,",
+      "      TurnContext: appInitialModule.HQ,",
+      "      useCurrentTurnContext: appInitialModule.WQ,",
+      "      ReactDOMPortal: appInitialModule.qzt(),",
+      "      contentReferenceIndex: chatgptThreadVisibilityModule.w,",
+      "      ChatGptCodeBlock: chatgptCodeBlockModule.ChatGptCodeBlock,",
+      "      LocalConversationItem: localConversationItemModule.S,",
+      "      CloudConversationTurn: chatgptThreadVisibilityModule.s,",
       "      startChatGptSignIn: authModule.o,",
     ),
   }),
   Object.freeze({
     name: "native close icon",
-    before: '        ["settings", appInitialModule.bot],',
+    before: '        ["settings", appInitialModule.B8],',
     after: lines(
-      '        ["settings", appInitialModule.bot],',
-      '        ["x", appInitialModule.J9],',
+      '        ["settings", appInitialModule.B8],',
+      '        ["x", appInitialModule.nmt],',
     ),
   }),
   Object.freeze({

@@ -28,6 +28,7 @@ const {
   startRendererLifecycle,
   uiSurfaceInteractionReady,
   uiSurfaceProbeEventFile,
+  waitForPrimaryUiReadiness,
   writeCurrentRendererDocumentDiagnostics,
 } = bootstrap;
 
@@ -377,6 +378,58 @@ test("primary app shell selection delegates to the exact binding, not page text"
     ),
     true,
   );
+});
+
+test("primary app shell readiness stops when its renderer document is replaced", async () => {
+  let current = true;
+  let clock = 0;
+  let waits = 0;
+  const ready = await waitForPrimaryUiReadiness({
+    evaluate: () => new Promise(() => {}),
+    isCurrent: () => current,
+    wait: async (milliseconds) => {
+      waits += 1;
+      clock += milliseconds;
+      current = false;
+    },
+    now: () => clock,
+  });
+  assert.equal(ready, false);
+  assert.equal(waits, 1);
+});
+
+test("primary app shell readiness bounds a pending renderer evaluation", async () => {
+  let clock = 0;
+  let waits = 0;
+  const ready = await waitForPrimaryUiReadiness({
+    evaluate: () => new Promise(() => {}),
+    isCurrent: () => true,
+    wait: async (milliseconds) => {
+      waits += 1;
+      clock += milliseconds;
+    },
+    now: () => clock,
+    timeoutMilliseconds: 100,
+    pollMilliseconds: 25,
+  });
+  assert.equal(ready, false);
+  assert.equal(clock, 100);
+  assert.equal(waits, 4);
+});
+
+test("primary app shell readiness retries a settled false result", async () => {
+  let clock = 0;
+  let evaluations = 0;
+  const ready = await waitForPrimaryUiReadiness({
+    evaluate: async () => ++evaluations === 2,
+    isCurrent: () => true,
+    wait: async (milliseconds) => {
+      clock += milliseconds;
+    },
+    now: () => clock,
+  });
+  assert.equal(ready, true);
+  assert.equal(evaluations, 2);
 });
 
 test("a replaced renderer document cannot write probe diagnostics", () => {
