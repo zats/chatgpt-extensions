@@ -5,7 +5,20 @@ import test from "node:test";
 
 import patchModule from "./host-source-patch.cjs";
 
-const { patchBindingHostSource } = patchModule;
+const { isPrimaryWindowOptions, patchBindingHostSource } = patchModule;
+
+test("exact window appearance mapping selects only ChatGPT primary windows", () => {
+  assert.equal(
+    isPrimaryWindowOptions({ webPreferences: { scrollBounce: true } }),
+    true,
+  );
+  assert.equal(
+    isPrimaryWindowOptions({ webPreferences: { scrollBounce: false } }),
+    false,
+  );
+  assert.equal(isPrimaryWindowOptions({ webPreferences: {} }), false);
+  assert.equal(isPrimaryWindowOptions(undefined), false);
+});
 
 const fiberOfSource = `  function fiberOf(node) {
     const key = Object.keys(node).find((candidate) =>
@@ -335,6 +348,25 @@ ${structuralAnchorFiller}
 ${sameThreadContextSource}
 ${fiberOfSource}
 ${applicationReactRootSource}
+  async function reconcileApplicationTreeFixture() {
+    const existingThreadMenu = Array.from(
+      document.querySelectorAll('button[aria-label="Chat actions"]'),
+    ).some((button) => button.getBoundingClientRect().height > 0);
+    if (!existingThreadMenu) return;
+    const boundaryDeadline = Date.now() + 10_000;
+    while (Date.now() < boundaryDeadline) {
+      const boundaryReady = Array.from(
+        document.querySelectorAll('button[aria-label="Chat actions"]'),
+      ).some(
+        (button) =>
+          button.getBoundingClientRect().height > 0 &&
+          typeof threadIdForTrigger(button) === "string",
+      );
+      if (boundaryReady) return;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    throw new Error("ChatGPT thread menu did not enter the native boundary");
+  }
   function emitCurrentThreadChange() {}
   function setCurrentThread(context) {
     currentThreadClearGeneration += 1;
@@ -492,6 +524,7 @@ ${threadListContextSource}
             : undefined,
       uwt: { authenticatedAccountId: "account-a" },
       Ezt: {},
+      Fc: function RemoteSidebarThreadRow() {},
     };
     const renderThreadTree = (_tree, context) => context;
 ${threadMenuContextSource}
@@ -573,10 +606,13 @@ ${nativeExportsSource}
     return {
       ThreadMenuBoundary,
       ExecutionSidebarThreadBoundary,
+      RemoteSidebarThreadBoundary,
       SidebarThreadBoundary,
       threadContextForMenuProps,
       isExecutionSidebarThreadRow,
       threadContextForExecutionSidebarProps,
+      isRemoteCodexSidebarThreadRow,
+      threadContextForRemoteSidebarProps,
       isChatGptSidebarThreadRow,
       threadContextForSidebarProps,
       isSidebarThreadMenuAdapter,
@@ -752,6 +788,12 @@ test("exact first-party UI owners expose extension transforms and controls", () 
     "ExactConversationItemBoundary",
     "ExactCloudConversationItemBoundary",
     "CloudConversationTurn: cloudConversationViewerModule.r",
+    "RemoteSidebarThreadRow: appInitialModule.Fc",
+    "RemoteSidebarThreadBoundary",
+    "threadContextForRemoteSidebarProps",
+    "data-cgptx-settings-page-owner",
+    "const probeDeadline = Date.now() + 55_000",
+    "Math.min(probeDeadline, Date.now() + timeout)",
     "type === native.Composer.AdaptiveFooter",
     "isExactComposerUtilityOwner(type, props)",
     "exactCloudAccountIdentity",
@@ -973,7 +1015,7 @@ test("rich fallback diagnostics read only the committed probe root once", () => 
   assert.doesNotMatch(functionSource, /document|innerText/);
 });
 
-test("the rich probe portal is owned by the exact AppShell main boundary", () => {
+test("the rich probe portal uses the verified first-party sidebar owner", () => {
   const result = patch();
   const boundarySource = sourceBetween(
     result.source,
@@ -985,14 +1027,15 @@ test("the rich probe portal is owned by the exact AppShell main boundary", () =>
     '      if (owner === "sidebar") {',
     "\n      const context = exactComposerContext",
   );
-  assert.match(
-    boundarySource,
-    /owner === "app-shell-main"[\s\S]*ExactRichContentProbePortal/,
-  );
-  assert.doesNotMatch(sidebarSource, /ExactRichContentProbePortal/);
-  assert.match(
+  assert.doesNotMatch(boundarySource, /owner === "app-shell-main"/);
+  assert.match(sidebarSource, /ExactRichContentProbePortal/);
+  assert.doesNotMatch(
     result.source,
-    /type === "main" &&[\s\S]*data-app-shell-main-surface[\s\S]*=== "default"[\s\S]*owner: "app-shell-main"/,
+    /owner: "app-shell-main"/,
+  );
+  assert.doesNotMatch(
+    result.source,
+    /type === "main" &&[\s\S]*ExactRichContentProbePortal/,
   );
 
   const portalSource = sourceBetween(
@@ -1058,7 +1101,7 @@ test("settings and React-root probes avoid whole-document scans", () => {
   );
   assert.match(
     settingsSource,
-    /main\[data-app-shell-main-surface="default"\]/,
+    /data-cgptx-settings-page-owner/,
   );
   assert.match(
     settingsSource,
@@ -1128,6 +1171,11 @@ test("the checked-in exact host applies the bounded probe correction", async () 
     /main\[data-app-shell-main-surface="default"\]/,
   );
   assert.match(result.source, /richContentFallbacks: exactRichFallbackSnapshot/);
+  assert.doesNotMatch(result.source, /threadIdForTrigger/);
+  assert.doesNotMatch(
+    result.source,
+    /ChatGPT thread menu did not enter the native boundary/,
+  );
 });
 
 test("exact host patch scopes same thread ids by ChatGPT host identity", async () => {
@@ -1198,7 +1246,7 @@ test("exact host patch scopes same thread ids by ChatGPT host identity", async (
       threadId: "thread-1",
       title: "Remote thread",
       mode: "codex",
-      location: "local",
+      location: "remote",
       selected: true,
     });
     assert.equal(host.sameThreadContext(headerContext, explicitHostContext), false);
@@ -1226,7 +1274,7 @@ test("exact host patch scopes same thread ids by ChatGPT host identity", async (
       threadId: "thread-3",
       title: "Third thread",
       mode: "codex",
-      location: "local",
+      location: "remote",
       selected: true,
     });
 
@@ -1260,7 +1308,7 @@ test("exact host patch scopes same thread ids by ChatGPT host identity", async (
         threadId: "thread-2",
         title: "Second thread",
         mode: "codex",
-        location: "local",
+        location: "remote",
       },
     );
     assert.equal(host.getNative().accountState.authenticatedAccountId, "account-a");
@@ -1662,6 +1710,59 @@ test("priority-indicator contributions follow the full row height without shifti
 
 test("signed-in sidebar owners use canonical cloud identity and exact Q9 shapes", async () => {
   const host = new Function(patch().source)();
+  const remoteTaskProps = {
+    task: {
+      id: "remote-task",
+      title: "Remote task",
+      archived: false,
+      has_unread_turn: true,
+    },
+    titlePrefix: null,
+    dataAttributes: {},
+    onClose() {},
+    isActive: false,
+    isPinned: true,
+  };
+  assert.equal(
+    host.isRemoteCodexSidebarThreadRow(
+      host.getNative().RemoteSidebarThreadRow,
+      remoteTaskProps,
+    ),
+    true,
+  );
+  assert.equal(
+    host.isRemoteCodexSidebarThreadRow(
+      function OtherRow() {},
+      remoteTaskProps,
+    ),
+    false,
+  );
+  assert.deepEqual(
+    host.threadContextForRemoteSidebarProps(remoteTaskProps, {
+      authenticatedAccountId: "authenticated-account",
+      accountId: "workspace-account",
+      accountStructure: "workspace",
+    }),
+    {
+      scope: "cloud",
+      surface: "sidebar",
+      accountId: "authenticated-account",
+      workspaceId: "workspace-account",
+      threadId: "remote-task",
+      title: "Remote task",
+      mode: "codex",
+      location: "remote",
+      selected: false,
+      pinned: true,
+      unread: true,
+      archived: false,
+      temporary: false,
+    },
+  );
+  assert.equal(
+    host.threadContextForRemoteSidebarProps(remoteTaskProps, {}),
+    null,
+  );
   const sidebarRow = new Function(
     "props",
     `

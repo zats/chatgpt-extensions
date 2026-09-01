@@ -76,6 +76,17 @@ const exactUiBridgeSource = String.raw`  const exactUiTransformers = Object.free
   let exactRichProbeContainer = null;
   let mountExactRichContentProbe = null;
   let unmountExactRichContentProbe = null;
+  const exactRemoteSidebarProbeTaskIds = Object.freeze({
+    colored: "chatgptx-remote-sidebar-probe-colored",
+    uncolored: "chatgptx-remote-sidebar-probe-uncolored",
+  });
+  const exactRemoteSidebarProbeTransforms = new Map();
+  let exactRemoteSidebarProbeRequested = false;
+  let exactRemoteSidebarProbeCommitted = false;
+  let exactRemoteSidebarProbeActivity = false;
+  let exactRemoteSidebarProbeContainer = null;
+  let mountExactRemoteSidebarProbe = null;
+  let unmountExactRemoteSidebarProbe = null;
   let runExactProductExtensionProbe = null;
   let runExactProductExtensionRealUiProbe = null;
 
@@ -1924,6 +1935,165 @@ const exactUiHookSource = String.raw`    const exactAssistantMarkdownContext =
       return true;
     };
 
+    function exactRemoteSidebarProbeTask(id, title) {
+      const timestamp = Math.floor(Date.now() / 1_000);
+      return Object.freeze({
+        id,
+        title,
+        archived: false,
+        created_at: timestamp,
+        updated_at: timestamp,
+        has_generated_title: true,
+        has_unread_turn: false,
+        external_pull_requests: Object.freeze([]),
+        task_status_display: Object.freeze({
+          latest_turn_status_display: Object.freeze({
+            turn_status: "completed",
+          }),
+        }),
+      });
+    }
+
+    function ExactRemoteSidebarProbe() {
+      const coloredTask = exactRemoteSidebarProbeTask(
+        exactRemoteSidebarProbeTaskIds.colored,
+        "ChatGPTX remote colored task",
+      );
+      const uncoloredTask = exactRemoteSidebarProbeTask(
+        exactRemoteSidebarProbeTaskIds.uncolored,
+        "ChatGPTX remote uncolored task",
+      );
+      const secondaryContent = exactRemoteSidebarProbeActivity
+        ? originalJsx("span", { children: "View activity" })
+        : undefined;
+      const row = (task) => {
+        const scopedId = "remote:" + task.id;
+        const dataAttributes = {
+          "data-app-action-sidebar-thread-row": "",
+          "data-app-action-sidebar-thread-id": scopedId,
+          "data-app-action-sidebar-thread-kind": "remote",
+          "data-app-action-sidebar-thread-title": task.title,
+          "data-app-action-sidebar-thread-pinned": "false",
+          "data-app-action-sidebar-thread-selected": "false",
+        };
+        const child = originalJsx(native.RemoteSidebarThreadRow, {
+          task,
+          titlePrefix: null,
+          secondaryContent,
+          onClose() {},
+          isActive: false,
+          variant: "sidebar",
+          contextMenuItems: Object.freeze([
+            Object.freeze({
+              id: "chatgptx-remote-probe-app-action",
+              message: Object.freeze({
+                id: "chatgptx.remoteProbe.appAction",
+                defaultMessage: "App action",
+              }),
+              onSelect() {},
+            }),
+          ]),
+          transformContextMenuItems: (items) => items,
+          dataAttributes,
+        });
+        return originalJsx(
+          RemoteSidebarThreadBoundary,
+          { child },
+          scopedId,
+        );
+      };
+      return originalJsxs("div", {
+        "data-cgptx-remote-sidebar-probe": "",
+        style: {
+          display: "flex",
+          flexDirection: "column",
+          width: "320px",
+        },
+        children: [row(coloredTask), row(uncoloredTask)],
+      });
+    }
+
+    function ExactRemoteSidebarProbePortal() {
+      React.useSyncExternalStore(
+        subscribeExactUi,
+        () => exactUiVersion,
+        () => exactUiVersion,
+      );
+      const container = exactRemoteSidebarProbeRequested
+        ? exactRemoteSidebarProbeContainer
+        : null;
+      React.useLayoutEffect(() => {
+        if (container === null) {
+          exactRemoteSidebarProbeCommitted = false;
+          return undefined;
+        }
+        exactRemoteSidebarProbeCommitted = true;
+        return () => {
+          if (
+            exactRemoteSidebarProbeContainer === container ||
+            !exactRemoteSidebarProbeRequested
+          ) {
+            exactRemoteSidebarProbeCommitted = false;
+          }
+        };
+      }, [container]);
+      if (container === null) return null;
+      return native.ReactDOMPortal.createPortal(
+        originalJsx(ExactRemoteSidebarProbe, {}),
+        container,
+      );
+    }
+
+    mountExactRemoteSidebarProbe = () => {
+      if (exactRemoteSidebarProbeRequested) return true;
+      const container = document.createElement("div");
+      container.dataset.cgptxRemoteSidebarProbeRoot = "true";
+      Object.assign(container.style, {
+        position: "fixed",
+        insetInlineStart: "0",
+        top: "0",
+        width: "320px",
+        opacity: "0.001",
+        pointerEvents: "none",
+        zIndex: "-1",
+      });
+      document.body.append(container);
+      exactRemoteSidebarProbeContainer = container;
+      exactRemoteSidebarProbeActivity = false;
+      exactRemoteSidebarProbeRequested = true;
+      emitExactUiChange();
+      return true;
+    };
+    unmountExactRemoteSidebarProbe = () => {
+      if (
+        !exactRemoteSidebarProbeRequested &&
+        !exactRemoteSidebarProbeContainer
+      ) {
+        return true;
+      }
+      exactRemoteSidebarProbeRequested = false;
+      exactRemoteSidebarProbeActivity = false;
+      exactRemoteSidebarProbeTransforms.clear();
+      emitExactUiChange();
+      const container = exactRemoteSidebarProbeContainer;
+      exactRemoteSidebarProbeContainer = null;
+      let observer;
+      const removeEmptyContainer = () => {
+        if (!container?.isConnected) {
+          observer?.disconnect();
+          return;
+        }
+        if (!container.hasChildNodes()) {
+          observer?.disconnect();
+          container.remove();
+        }
+      };
+      observer = new MutationObserver(removeEmptyContainer);
+      observer.observe(container, { childList: true });
+      removeEmptyContainer();
+      return true;
+    };
+
     let exactProductReactionResult = null;
 
     function ExactProductReactionProbe() {
@@ -2167,8 +2337,9 @@ const exactUiHookSource = String.raw`    const exactAssistantMarkdownContext =
       }
 
       const wait = () => new Promise((resolve) => setTimeout(resolve, 50));
+      const probeDeadline = Date.now() + 55_000;
       const waitUntil = async (predicate, label, timeout = 20_000) => {
-        const deadline = Date.now() + timeout;
+        const deadline = Math.min(probeDeadline, Date.now() + timeout);
         let value;
         while (Date.now() < deadline) {
           value = predicate();
@@ -2181,6 +2352,10 @@ const exactUiHookSource = String.raw`    const exactAssistantMarkdownContext =
           ),
         )
           .filter((element) => isVisible(element)).length;
+        console.warn(
+          "[cgptx-host] real product UI probe wait timed out",
+          label,
+        );
         throw new Error(
           "Timed out waiting for " +
             label +
@@ -2491,7 +2666,7 @@ const exactUiHookSource = String.raw`    const exactAssistantMarkdownContext =
           (left, right) =>
             Number(left.initiallySelected) - Number(right.initiallySelected),
         );
-      const selectionDeadline = Date.now() + 45_000;
+      const selectionDeadline = Math.min(probeDeadline, Date.now() + 25_000);
       let selectedRow = null;
       let selectedIdentity = null;
       const selectionAttempts = [];
@@ -2672,12 +2847,169 @@ const exactUiHookSource = String.raw`    const exactAssistantMarkdownContext =
       );
       const standardLayout = rowLayout(selectedRow, standardRows);
 
-      const findCloudOwner = () => {
+      const rawMenuItemByMessageId = (items, id) => {
+        for (const item of items ?? []) {
+          if (item?.message?.id === id) return item;
+          const nested = rawMenuItemByMessageId(item?.submenu, id);
+          if (nested) return nested;
+        }
+        return null;
+      };
+      const remoteProbeRow = (threadId) =>
+        visibleCloudRows().find(
+          (row) =>
+            row.getAttribute("data-cgptx-thread-row-mode") === "codex" &&
+            rawThreadId(row) === threadId,
+        ) ?? null;
+      mountExactRemoteSidebarProbe();
+      let remoteCodex;
+      try {
+        await waitUntil(
+          () => exactRemoteSidebarProbeCommitted,
+          "the first-party Remote Codex task probe",
+        );
+        const remoteTransform = await waitUntil(
+          () =>
+            exactRemoteSidebarProbeTransforms.get(
+              exactRemoteSidebarProbeTaskIds.colored,
+            ),
+          "the Remote Codex task menu transformer",
+        );
+        const remoteRawItems = await remoteTransform([
+          {
+            id: "chatgptx-remote-probe-app-action",
+            message: {
+              id: "chatgptx.remoteProbe.appAction",
+              defaultMessage: "App action",
+            },
+            onSelect() {},
+          },
+        ]);
+        const remoteColorItem = rawMenuItemByMessageId(
+          remoteRawItems,
+          "thread-colors.color",
+        );
+        const remoteBlueItem = rawMenuItemByMessageId(
+          remoteRawItems,
+          "thread-colors.blue",
+        );
+        if (
+          !remoteColorItem ||
+          typeof remoteBlueItem?.onSelect !== "function"
+        ) {
+          throw new Error(
+            "Thread Colors did not contribute Color > Blue through the Remote Codex task menu",
+          );
+        }
+        await remoteBlueItem.onSelect({ metaKey: false });
+        const remoteModel = await waitUntil(
+          () =>
+            Array.from(threadModels.values()).find(
+              (candidate) =>
+                candidate?.context?.scope === "cloud" &&
+                candidate.context.mode === "codex" &&
+                candidate.context.threadId ===
+                  exactRemoteSidebarProbeTaskIds.colored,
+            ) ?? null,
+          "the Remote Codex task menu model",
+        );
+        const remoteOwnerKey = threadOwnerKey(remoteModel.context);
+        const remoteHost = await waitUntil(
+          () =>
+            Array.from(
+              document.querySelectorAll(
+                '[data-cgptx-thread-list-views="priority-indicator"]',
+              ),
+            ).find(
+              (candidate) =>
+                candidate.getAttribute("data-cgptx-thread-list-owner") ===
+                  remoteOwnerKey,
+            ) ?? null,
+          "the Thread Colors owner in the Remote Codex task row",
+        );
+        const remoteStandardRows = await waitUntil(
+          () => {
+            const colored = remoteProbeRow(
+              exactRemoteSidebarProbeTaskIds.colored,
+            );
+            const uncolored = remoteProbeRow(
+              exactRemoteSidebarProbeTaskIds.uncolored,
+            );
+            return colored && uncolored && [colored, uncolored];
+          },
+          "two first-party Remote Codex task rows",
+        );
+        const remoteStandardRow = remoteHost.closest(
+          "[data-app-action-sidebar-thread-row], [data-cgptx-thread-row-owner]",
+        );
+        if (!(remoteStandardRow instanceof HTMLElement)) {
+          throw new Error(
+            "The Remote Codex Thread Colors owner has no first-party row",
+          );
+        }
+        const remoteStandardLayout = rowLayout(
+          remoteStandardRow,
+          remoteStandardRows,
+        );
+        const standardRemoteHeight =
+          remoteStandardLayout.row?.height ?? Number.NaN;
+        exactRemoteSidebarProbeActivity = true;
+        emitExactUiChange();
+        const remoteActivityRow = await waitUntil(
+          () => {
+            const row = remoteProbeRow(
+              exactRemoteSidebarProbeTaskIds.colored,
+            );
+            const height = row?.getBoundingClientRect?.().height ?? 0;
+            return height > standardRemoteHeight + 1 && row;
+          },
+          "the taller Remote Codex task activity row",
+        );
+        const remoteActivityRows = [
+          remoteActivityRow,
+          await waitUntil(
+            () =>
+              remoteProbeRow(exactRemoteSidebarProbeTaskIds.uncolored),
+            "the uncolored Remote Codex task activity row",
+          ),
+        ];
+        const remoteActivityLayout = rowLayout(
+          remoteActivityRow,
+          remoteActivityRows,
+        );
+        remoteCodex = Object.freeze({
+          component: "RemoteSidebarThreadRow",
+          fixture: "task",
+          thread: remoteModel.context,
+          menuActionFound: true,
+          menuActionClicked: true,
+          ownerMatched:
+            remoteHost.getAttribute("data-cgptx-thread-list-owner") ===
+            remoteOwnerKey,
+          standard: remoteStandardLayout,
+          activity: remoteActivityLayout,
+          activityRowIsTaller:
+            (remoteActivityLayout.row?.height ?? 0) >
+            (remoteStandardLayout.row?.height ?? 0) + 1,
+        });
+      } finally {
+        unmountExactRemoteSidebarProbe();
+        await waitUntil(
+          () =>
+            document.querySelector(
+              "[data-cgptx-remote-sidebar-probe-root]",
+            ) === null,
+          "Remote Codex task probe disposal",
+        );
+      }
+
+      const findChatGptCloudOwner = () => {
         for (const candidateModel of threadModels.values()) {
           const context = candidateModel?.context;
           if (
             context?.scope !== "cloud" ||
             context?.surface !== "sidebar" ||
+            context?.mode !== "chatgpt" ||
             typeof context.title !== "string" ||
             context.title.length === 0
           ) {
@@ -2693,75 +3025,55 @@ const exactUiHookSource = String.raw`    const exactAssistantMarkdownContext =
         }
         return null;
       };
-      let cloudOwner;
-      try {
-        cloudOwner = await waitUntil(
-          findCloudOwner,
-          "a visible signed-in ChatGPT cloud thread row",
+      const chatGptCloudOwner = findChatGptCloudOwner();
+      let chatGptCloud = Object.freeze({ ownerObserved: false });
+      if (chatGptCloudOwner) {
+        const cloudItems = computeEffectiveThreadItems(chatGptCloudOwner.model);
+        const cloudColorItem = findItemDeep(cloudItems, "thread-colors.color");
+        const cloudBlueItem = findItemDeep(cloudItems, "thread-colors.blue");
+        if (
+          cloudColorItem?.kind !== "action" ||
+          cloudBlueItem?.kind !== "action" ||
+          typeof cloudBlueItem.onClick !== "function"
+        ) {
+          throw new Error(
+            "Thread Colors did not contribute Color > Blue for the ChatGPT cloud row",
+          );
+        }
+        await cloudBlueItem.onClick({ metaKey: false });
+        const cloudOwnerKey = threadOwnerKey(chatGptCloudOwner.model.context);
+        const cloudHost = await waitUntil(
+          () =>
+            Array.from(
+              document.querySelectorAll(
+                '[data-cgptx-thread-list-views="priority-indicator"]',
+              ),
+            ).find(
+              (candidate) =>
+                candidate.getAttribute("data-cgptx-thread-list-owner") ===
+                  cloudOwnerKey,
+            ) ?? null,
+          "the Thread Colors owner in the ChatGPT cloud row",
         );
-      } catch (error) {
-        const modelContexts = Array.from(threadModels.values()).map((model) => ({
-          scope: model?.context?.scope ?? null,
-          surface: model?.context?.surface ?? null,
-          hasAccount: typeof model?.context?.accountId === "string",
-          hasWorkspace: typeof model?.context?.workspaceId === "string",
-          hasHost: typeof model?.context?.hostId === "string",
-          hasTitle:
-            typeof model?.context?.title === "string" &&
-            model.context.title.length > 0,
-        }));
-        const ownerScopes = Array.from(
-          document.querySelectorAll("[data-cgptx-thread-list-scope]"),
-        ).map((owner) => owner.getAttribute("data-cgptx-thread-list-scope"));
-        const rowKinds = visibleThreadRows().map((row) => ({
-          hasHost:
-            (row.getAttribute("data-app-action-sidebar-thread-host-id") ?? "")
-              .length > 0,
-          kind: row.getAttribute("data-app-action-sidebar-thread-kind") ?? null,
-        }));
-        throw new Error(
-          String(error?.message ?? error) +
-            "; cloud owner diagnostics: " +
-            JSON.stringify({ modelContexts, ownerScopes, rowKinds }),
+        const cloudRow = cloudHost.closest(
+          "[data-app-action-sidebar-thread-row], [data-cgptx-thread-row-owner]",
         );
+        if (!(cloudRow instanceof HTMLElement) || !isVisible(cloudRow)) {
+          throw new Error(
+            "The ChatGPT cloud Thread Colors owner has no visible native row",
+          );
+        }
+        chatGptCloud = Object.freeze({
+          ownerObserved: true,
+          thread: chatGptCloudOwner.model.context,
+          menuActionFound: true,
+          menuActionClicked: true,
+          ownerMatched:
+            cloudHost.getAttribute("data-cgptx-thread-list-owner") ===
+            cloudOwnerKey,
+          layout: rowLayout(cloudRow, visibleCloudRows()),
+        });
       }
-      const cloudItems = computeEffectiveThreadItems(cloudOwner.model);
-      const cloudColorItem = findItemDeep(cloudItems, "thread-colors.color");
-      const cloudBlueItem = findItemDeep(cloudItems, "thread-colors.blue");
-      if (
-        cloudColorItem?.kind !== "action" ||
-        cloudBlueItem?.kind !== "action" ||
-        typeof cloudBlueItem.onClick !== "function"
-      ) {
-        throw new Error(
-          "Thread Colors did not contribute Color > Blue for the cloud row",
-        );
-      }
-      cloudBlueItem.onClick({ metaKey: false });
-      await Promise.resolve();
-      const cloudOwnerKey = threadOwnerKey(cloudOwner.model.context);
-      const cloudHost = await waitUntil(
-        () =>
-          Array.from(
-            document.querySelectorAll(
-              '[data-cgptx-thread-list-views="priority-indicator"]',
-            ),
-          ).find(
-            (candidate) =>
-              candidate.getAttribute("data-cgptx-thread-list-owner") ===
-                cloudOwnerKey &&
-              candidate.getAttribute("data-cgptx-thread-list-scope") ===
-                "cloud",
-          ) ?? null,
-        "the Thread Colors owner in the cloud row",
-      );
-      const cloudRow = cloudHost.closest(
-        "[data-app-action-sidebar-thread-row], [data-cgptx-thread-row-owner]",
-      );
-      if (!(cloudRow instanceof HTMLElement) || !isVisible(cloudRow)) {
-        throw new Error("The cloud Thread Colors owner has no visible native row");
-      }
-      const cloudLayout = rowLayout(cloudRow, visibleCloudRows());
 
       const target = await waitUntil(
         () => responseTarget(selectedIdentity.threadId),
@@ -2868,9 +3180,20 @@ const exactUiHookSource = String.raw`    const exactAssistantMarkdownContext =
       if (!settingsOpened) {
         throw new Error("The native Settings window did not open");
       }
+      const settingsOwner = () =>
+        document.querySelector("[data-cgptx-settings-page-owner]");
+      await waitUntil(
+        () => {
+          const owner = settingsOwner();
+          return isVisible(owner) && owner;
+        },
+        "the native Settings page owner",
+      );
       const searchInput = await waitUntil(
-        () =>
-          Array.from(document.querySelectorAll("input")).find((input) => {
+        () => {
+          const owner = settingsOwner();
+          if (!(owner instanceof HTMLElement)) return null;
+          return Array.from(owner.querySelectorAll("input")).find((input) => {
             const label = [
               input.getAttribute("aria-label"),
               input.getAttribute("placeholder"),
@@ -2881,15 +3204,10 @@ const exactUiHookSource = String.raw`    const exactAssistantMarkdownContext =
               .join(" ")
               .toLocaleLowerCase();
             return isVisible(input) && label.includes("search");
-          }) ?? null,
+          }) ?? null;
+        },
         "the native Settings search field",
       );
-      const settingsRoot = searchInput.closest(
-        'main[data-app-shell-main-surface="default"]',
-      );
-      if (!(settingsRoot instanceof HTMLElement)) {
-        throw new Error("The native Settings AppShell owner is unavailable");
-      }
       const searchQuery = "Thread Colors";
       const valueSetter = Object.getOwnPropertyDescriptor(
         HTMLInputElement.prototype,
@@ -2920,9 +3238,11 @@ const exactUiHookSource = String.raw`    const exactAssistantMarkdownContext =
       }
       const searchResult = await waitUntil(
         () => {
+          const owner = settingsOwner();
+          if (!(owner instanceof HTMLElement)) return null;
           return (
             Array.from(
-              settingsRoot.querySelectorAll(
+              owner.querySelectorAll(
                 'button, a, [role="button"], [role="option"], [role="menuitem"]',
               ),
             ).find(
@@ -2938,7 +3258,9 @@ const exactUiHookSource = String.raw`    const exactAssistantMarkdownContext =
       const threadColorsTarget = await waitUntil(
         () => {
           if (currentSettingsPaneId() !== "extensions.installed") return null;
-          const target = settingsRoot.querySelector(
+          const owner = settingsOwner();
+          if (!(owner instanceof HTMLElement)) return null;
+          const target = owner.querySelector(
             '[data-settings-target-id="extension.thread-colors"]',
           );
           return isVisible(target) && target;
@@ -2946,14 +3268,18 @@ const exactUiHookSource = String.raw`    const exactAssistantMarkdownContext =
         "the Extensions settings pane selected from search",
       );
       await wait();
+      const selectedSettingsOwner = settingsOwner();
+      if (!(selectedSettingsOwner instanceof HTMLElement)) {
+        throw new Error("The selected native Settings page owner is unavailable");
+      }
       const visibleRefreshControl = Array.from(
-        settingsRoot.querySelectorAll('button, [role="button"]'),
+        selectedSettingsOwner.querySelectorAll('button, [role="button"]'),
       ).find(
         (element) =>
           isVisible(element) && element.textContent?.trim() === "Refresh",
       );
       const visibleSettingsButtons = Array.from(
-        settingsRoot.querySelectorAll('button, [role="button"]'),
+        selectedSettingsOwner.querySelectorAll('button, [role="button"]'),
       ).filter(isVisible);
       const settingsButtonWithLabel = (label) =>
         visibleSettingsButtons.some(
@@ -2968,7 +3294,6 @@ const exactUiHookSource = String.raw`    const exactAssistantMarkdownContext =
         thread: Object.freeze({
           ...selectedIdentity,
           title: model.context.title,
-          signedInHeaderTitleFound: headerTitle instanceof HTMLElement,
         }),
         threadColors: Object.freeze({
           nativeMenuTrigger: true,
@@ -2980,15 +3305,11 @@ const exactUiHookSource = String.raw`    const exactAssistantMarkdownContext =
           activityRowIsTaller:
             (activityLayout.row?.height ?? 0) >
             (standardLayout.row?.height ?? 0) + 1,
-          cloud: Object.freeze({
-            scope: cloudOwner.model.context.scope,
-            menuActionFound: true,
-            menuActionClicked: true,
-            ownerMatched:
-              cloudHost.getAttribute("data-cgptx-thread-list-owner") ===
-              cloudOwnerKey,
-            layout: cloudLayout,
+          remoteCodex: Object.freeze({
+            ...remoteCodex,
+            disposed: true,
           }),
+          chatGptCloud,
         }),
         reactions: Object.freeze({
           targetFound: target instanceof HTMLElement,
@@ -3079,22 +3400,27 @@ const exactUiHookSource = String.raw`    const exactAssistantMarkdownContext =
           entries: exactAnnouncementItems(props.entries),
         }, elementKey);
       }
-      if (owner === "app-shell-main") {
-        return originalJsxs(React.Fragment, {
-          children: [
-            originalJsx(type, props, elementKey),
-            originalJsx(ExactRichContentProbePortal, {}),
-          ],
-        });
-      }
       if (owner === "sidebar") {
-        return originalJsx(type, {
+        const sidebar = originalJsx(type, {
           ...props,
           availableDestinations: exactSidebarDestinationItems(
             props.availableDestinations,
             props,
           ),
         }, elementKey);
+        return exactRichProbeRequested || exactRemoteSidebarProbeRequested
+          ? originalJsxs(React.Fragment, {
+              children: [
+                sidebar,
+                exactRichProbeRequested
+                  ? originalJsx(ExactRichContentProbePortal, {})
+                  : null,
+                exactRemoteSidebarProbeRequested
+                  ? originalJsx(ExactRemoteSidebarProbePortal, {})
+                  : null,
+              ],
+            })
+          : sidebar;
       }
       const context = exactComposerContext(props);
       if (owner === "composer-footer") {
@@ -3525,6 +3851,35 @@ const patches = Object.freeze([
     ),
   }),
   Object.freeze({
+    name: "defer thread surface validation to the live probe",
+    before: lines(
+      "    const existingThreadMenu = Array.from(",
+      "      document.querySelectorAll('button[aria-label=\"Chat actions\"]'),",
+      "    ).some((button) => button.getBoundingClientRect().height > 0);",
+    ),
+    after: "",
+  }),
+  Object.freeze({
+    name: "remove stale application tree thread boundary wait",
+    before: lines(
+      "    if (!existingThreadMenu) return;",
+      "    const boundaryDeadline = Date.now() + 10_000;",
+      "    while (Date.now() < boundaryDeadline) {",
+      "      const boundaryReady = Array.from(",
+      "        document.querySelectorAll('button[aria-label=\"Chat actions\"]'),",
+      "      ).some(",
+      "        (button) =>",
+      "          button.getBoundingClientRect().height > 0 &&",
+      '          typeof threadIdForTrigger(button) === "string",',
+      "      );",
+      "      if (boundaryReady) return;",
+      "      await new Promise((resolve) => setTimeout(resolve, 50));",
+      "    }",
+      '    throw new Error("ChatGPT thread menu did not enter the native boundary");',
+    ),
+    after: "",
+  }),
+  Object.freeze({
     name: "thread context equality",
     before: lines(
       "  function sameThreadContext(left, right) {",
@@ -3642,7 +3997,7 @@ const patches = Object.freeze([
       "      threadId: scopedId.slice(separator + 1),",
       '      title: row.getAttribute("data-app-action-sidebar-thread-title") ?? "",',
       '      mode: "codex",',
-      '      location: "local",',
+      '      location: hostId === "local" ? "local" : "remote",',
       "    });",
       "  }",
     ),
@@ -3702,16 +4057,17 @@ const patches = Object.freeze([
       '        typeof props.title === "string"',
       "          ? props.title",
       '          : row?.getAttribute("data-app-action-sidebar-thread-title") ?? "";',
+      "      const hostId =",
+      "        requestedHostId ??",
+      '        row?.getAttribute("data-app-action-sidebar-thread-host-id");',
       "      return Object.freeze({",
       '        scope: "execution",',
       '        surface: "header",',
-      "        hostId:",
-      "          requestedHostId ??",
-      '          row?.getAttribute("data-app-action-sidebar-thread-host-id"),',
+      "        hostId,",
       "        threadId,",
       "        title,",
       '        mode: "codex",',
-      '        location: "local",',
+      '        location: hostId === undefined || hostId === "local" ? "local" : "remote",',
       "        selected: true,",
       '        ...(typeof props.cwd === "string" && props.cwd.length > 0',
       "          ? { workingDirectory: props.cwd }",
@@ -4270,11 +4626,67 @@ const patches = Object.freeze([
       "                ? props.titleOverride",
       '                : "",',
       '        mode: "codex",',
-      '        location: "local",',
+      '        location: props.hostId === "local" ? "local" : "remote",',
       "        selected: props.isActive === true,",
       "        pinned: props.isPinned === true,",
       "        unread: props.isUnread === true,",
       "        archived: false,",
+      "        temporary: false,",
+      "      });",
+      "    }",
+      "",
+      "    function isRemoteCodexSidebarThreadRow(type, props) {",
+      "      return (",
+      "        type === native.RemoteSidebarThreadRow &&",
+      "        props?.task &&",
+      '        typeof props.task === "object" &&',
+      '        typeof props.task.id === "string" &&',
+      "        props.task.id.length > 0 &&",
+      '        typeof props.onClose === "function" &&',
+      '        Object.hasOwn(props, "titlePrefix") &&',
+      '        Object.hasOwn(props, "dataAttributes")',
+      "      );",
+      "    }",
+      "",
+      "    function threadContextForRemoteSidebarProps(props, accountState) {",
+      "      const task = props?.task;",
+      "      const accountId =",
+      '        typeof accountState?.authenticatedAccountId === "string" &&',
+      "        accountState.authenticatedAccountId.length > 0",
+      "          ? accountState.authenticatedAccountId",
+      '          : typeof accountState?.accountId === "string" &&',
+      "              accountState.accountId.length > 0",
+      "            ? accountState.accountId",
+      "            : undefined;",
+      "      if (",
+      "        !task ||",
+      '        typeof task.id !== "string" ||',
+      "        task.id.length === 0 ||",
+      "        accountId === undefined",
+      "      ) {",
+      "        return null;",
+      "      }",
+      "      const selectedAccountId = accountState?.accountId;",
+      "      const workspaceId =",
+      '        accountState?.accountStructure === "workspace" &&',
+      '        typeof selectedAccountId === "string" &&',
+      "        selectedAccountId.length > 0 &&",
+      "        selectedAccountId !== accountId",
+      "          ? selectedAccountId",
+      "          : undefined;",
+      "      return Object.freeze({",
+      '        scope: "cloud",',
+      '        surface: "sidebar",',
+      "        accountId,",
+      "        ...(workspaceId === undefined ? {} : { workspaceId }),",
+      "        threadId: task.id,",
+      '        title: typeof task.title === "string" ? task.title : "",',
+      '        mode: "codex",',
+      '        location: "remote",',
+      "        selected: props.isActive === true,",
+      "        pinned: props.isPinned === true,",
+      "        unread: task.has_unread_turn === true,",
+      "        archived: task.archived === true,",
       "        temporary: false,",
       "      });",
       "    }",
@@ -4665,6 +5077,135 @@ const patches = Object.freeze([
       "      );",
       "    }",
       "",
+      "    function RemoteSidebarThreadBoundary({ child }) {",
+      "      const accountState = native.useScopeValue(native.accountState);",
+      "      const intl = native.useIntl();",
+      "      React.useSyncExternalStore(",
+      "        subscribe,",
+      "        () => renderVersion,",
+      "        () => renderVersion,",
+      "      );",
+      "      React.useSyncExternalStore(",
+      "        subscribeThreadMenu,",
+      "        () => threadMenuRenderVersion,",
+      "        () => threadMenuRenderVersion,",
+      "      );",
+      "      const context = threadContextForRemoteSidebarProps(",
+      "        child.props,",
+      "        accountState,",
+      "      );",
+      "      const transformContextMenuItems = async (rawItems) => {",
+      "        const appItems =",
+      '          typeof child.props.transformContextMenuItems === "function"',
+      "            ? await child.props.transformContextMenuItems(rawItems)",
+      "            : rawItems;",
+      "        if (!Array.isArray(appItems)) {",
+      '          throw new Error("ChatGPT remote task menu items must be an array");',
+      "        }",
+      "        if (!context) return appItems;",
+      "        const model = updateGenericThreadModel(",
+      "          context,",
+      "          appItems,",
+      "          {},",
+      "          intl,",
+      "        );",
+      "        return rawThreadItemsAsync(model);",
+      "      };",
+      "      React.useLayoutEffect(() => {",
+      "        if (",
+      "          context?.threadId !== exactRemoteSidebarProbeTaskIds.colored",
+      "        ) {",
+      "          return undefined;",
+      "        }",
+      "        exactRemoteSidebarProbeTransforms.set(",
+      "          context.threadId,",
+      "          transformContextMenuItems,",
+      "        );",
+      "        return () => {",
+      "          if (",
+      "            exactRemoteSidebarProbeTransforms.get(context.threadId) ===",
+      "            transformContextMenuItems",
+      "          ) {",
+      "            exactRemoteSidebarProbeTransforms.delete(context.threadId);",
+      "          }",
+      "        };",
+      "      }, [context?.threadId, transformContextMenuItems]);",
+      "      React.useLayoutEffect(() => {",
+      "        if (!context?.selected) return undefined;",
+      "        setCurrentThread(context);",
+      "        return () => clearCurrentThreadAfterUnmount(context);",
+      "      }, [",
+      "        context?.accountId,",
+      "        context?.workspaceId,",
+      "        context?.threadId,",
+      "        context?.title,",
+      "        context?.selected,",
+      "        context?.pinned,",
+      "        context?.unread,",
+      "      ]);",
+      "      if (!context) return child;",
+      '      const prefixItems = computeThreadListItems(context, "title-prefix");',
+      "      const extensionPrefix =",
+      "        prefixItems.length === 0",
+      "          ? null",
+      "          : originalJsx(",
+      "              ThreadListViews,",
+      '              { context, items: prefixItems, slot: "title-prefix" },',
+      '              `${threadOwnerKey(context)}:title-prefix`,',
+      "            );",
+      "      const titlePrefix =",
+      "        extensionPrefix == null",
+      "          ? child.props.titlePrefix",
+      "          : child.props.titlePrefix == null",
+      "            ? extensionPrefix",
+      "            : originalJsxs(React.Fragment, {",
+      "                children: [child.props.titlePrefix, extensionPrefix],",
+      "              });",
+      "      const priorityItems = computeThreadListItems(",
+      "        context,",
+      '        "priority-indicator",',
+      "      );",
+      "      const extensionPriorityIndicator =",
+      "        priorityItems.length === 0",
+      "          ? null",
+      "          : originalJsx(",
+      "              ThreadListViews,",
+      '              { context, items: priorityItems, slot: "priority-indicator" },',
+      '              `${threadOwnerKey(context)}:priority-indicator`,',
+      "            );",
+      "      const overlayMetaContent =",
+      "        extensionPriorityIndicator == null",
+      "          ? child.props.overlayMetaContent",
+      "          : child.props.overlayMetaContent == null",
+      "            ? extensionPriorityIndicator",
+      "            : originalJsxs(React.Fragment, {",
+      "                children: [",
+      "                  child.props.overlayMetaContent,",
+      "                  extensionPriorityIndicator,",
+      "                ],",
+      "              });",
+      "      const dataAttributes = {",
+      "        ...(child.props.dataAttributes &&",
+      '        typeof child.props.dataAttributes === "object"',
+      "          ? child.props.dataAttributes",
+      "          : {}),",
+      '        "data-cgptx-thread-row-owner": threadOwnerKey(context),',
+      '        "data-cgptx-thread-row-scope": context.scope,',
+      '        "data-cgptx-thread-row-mode": context.mode,',
+      "      };",
+      "      return originalJsx(",
+      "        child.type,",
+      "        {",
+      "          ...child.props,",
+      "          titlePrefix,",
+      "          overlayMetaContent,",
+      "          dataAttributes,",
+      "          transformContextMenuItems,",
+      "        },",
+      "        child.key ?? undefined,",
+      "      );",
+      "    }",
+      "",
       "    function SidebarThreadBoundary({ child }) {",
       "      const accountState = native.useScopeValue(native.accountState);",
       "      React.useSyncExternalStore(",
@@ -4790,6 +5331,13 @@ const patches = Object.freeze([
       "        ) {",
     ),
     after: lines(
+      "        if (isRemoteCodexSidebarThreadRow(type, props)) {",
+      "          return originalJsx(",
+      "            RemoteSidebarThreadBoundary,",
+      "            { child: original(type, props, key) },",
+      "            key,",
+      "          );",
+      "        }",
       "        if (isExecutionSidebarThreadRow(type, props)) {",
       "          return originalJsx(",
       "            ExecutionSidebarThreadBoundary,",
@@ -5184,14 +5732,6 @@ const patches = Object.freeze([
     ),
     after: lines(
       "        if (",
-      '          type === "main" &&',
-      '          props?.["data-app-shell-main-surface"] === "default"',
-      "        ) {",
-      "          return originalJsx(ExactUiOwnerBoundary, {",
-      '            owner: "app-shell-main", type, props, elementKey: key,',
-      "          }, key);",
-      "        }",
-      "        if (",
       "          isExactContentReferenceDirective(type, props)",
       "        ) {",
       "          return originalJsx(ExactContentReferenceDirective, {",
@@ -5291,6 +5831,12 @@ const patches = Object.freeze([
       "          return originalJsx(ExactUiOwnerBoundary, {",
       '            owner: "attachments", type, props, elementKey: key,',
       "          }, key);",
+      "        }",
+      "        if (type === native.SettingsPage) {",
+      "          props = {",
+      "            ...props,",
+      '            "data-cgptx-settings-page-owner": "",',
+      "          };",
       "        }",
       "        if (isAssistantSelectionPositioner(type, props)) {",
       "          props = wrapAssistantSelectionPositionerProps(props);",
@@ -5395,6 +5941,7 @@ const patches = Object.freeze([
       "      ChatGptCodeBlock: appInitialModule.Iw,",
       "      LocalConversationItem: conversationBlocksModule.f,",
       "      CloudConversationTurn: cloudConversationViewerModule.r,",
+      "      RemoteSidebarThreadRow: appInitialModule.Fc,",
       "      startChatGptSignIn: authModule.o,",
     ),
   }),
@@ -5484,6 +6031,10 @@ function occurrenceCount(source, value) {
   }
 }
 
+function isPrimaryWindowOptions(options) {
+  return options?.webPreferences?.scrollBounce === true;
+}
+
 function patchBindingHostSource(options) {
   if (!options || typeof options !== "object") {
     throw new TypeError("Binding host patch options are required");
@@ -5525,5 +6076,6 @@ function patchBindingHostSource(options) {
 }
 
 module.exports = Object.freeze({
+  isPrimaryWindowOptions,
   patchBindingHostSource,
 });

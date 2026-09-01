@@ -43,6 +43,8 @@ const patchedModules = Object.freeze({
 });
 
 const researchAssets = Object.freeze({
+  ".vite/build/main-BvHpyFqC.js":
+    "cf1e5f9637b925a5a7454bd313176f64af930bfb837cf0e0a7ce7c59f81124ad",
   "webview/assets/home-suggestion-surface-DYzWjNWQ.js":
     "fa612a39418909fc479e40485398d0cca8d4bd20c55f977369db10558a45344e",
   "webview/assets/home-ambient-suggestions-content-BsHgi12z.js":
@@ -114,6 +116,7 @@ test("pins mapped initializers, exports, and activation phase", async () => {
     "ChatGptMarkdownView: chatgptMarkdownModule.t",
     "LocalConversationItem: conversationBlocksModule.f",
     "CloudConversationTurn: cloudConversationViewerModule.r",
+    "RemoteSidebarThreadRow: appInitialModule.Fc",
     "useScopeValue: appInitialModule.JUt",
     "threadHostIdByConversation: appInitialModule.j2",
     "accountState: appInitialModule.uwt",
@@ -187,6 +190,29 @@ test(
     for (const [relativePath, expected] of Object.entries(researchAssets)) {
       const bytes = await readFile(join(researchTree, relativePath));
       assert.equal(createHash("sha256").update(bytes).digest("hex"), expected);
+    }
+    const appInitial = await readFile(
+      join(researchTree, "webview/assets/app-initial-DJrCTPoN.js"),
+      "utf8",
+    );
+    const main = await readFile(
+      join(researchTree, ".vite/build/main-BvHpyFqC.js"),
+      "utf8",
+    );
+    assert.ok(
+      main.includes(
+        "scrollBounce:process.platform===`darwin`&&o===`primary`",
+      ),
+      "ChatGPT primary window appearance discriminator",
+    );
+    for (const anchor of [
+      "function URc(e)",
+      "URc as Fc",
+      "kind:`remote`",
+      "transformContextMenuItems:u",
+      "task:e.task",
+    ]) {
+      assert.ok(appInitial.includes(anchor), anchor);
     }
   },
 );
