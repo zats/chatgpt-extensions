@@ -10,6 +10,7 @@ const {
   createRendererLifecycle,
   executeRendererJavaScript,
   isCurrentRendererDocument,
+  nativeBindingFailureDiagnosticsExpression,
   primaryAppShellDiagnosticsExpression,
   primaryAppShellReadyExpression,
   probeCompletionDisposition,
@@ -542,12 +543,22 @@ test("primary app shell diagnostics expose only fixed readiness facts", () => {
     { textContent: "Update ChatGPT" },
     { textContent: "Try again" },
   ];
+  const body = { children: [{}, {}, {}] };
+  Object.defineProperties(body, {
+    textContent: {
+      get: () => {
+        throw new Error("diagnostics read all body textContent");
+      },
+    },
+    innerText: {
+      get: () => {
+        throw new Error("diagnostics read all body innerText");
+      },
+    },
+  });
   const document = {
     readyState: "complete",
-    body: {
-      children: [{}, {}, {}],
-      textContent: "Private title Oops, an error has occurred private account",
-    },
+    body,
     querySelector: (selector) =>
       selector === "main[data-app-shell-main-surface]" ? root : null,
     querySelectorAll: (selector) =>
@@ -566,11 +577,68 @@ test("primary app shell diagnostics expose only fixed readiness facts", () => {
     mainElements: 1,
     primaryRootFound: true,
     mainFocusFound: true,
-    genericErrorVisible: true,
+    genericErrorVisible: false,
     updateActionVisible: true,
     retryActionVisible: true,
   });
   assert.doesNotMatch(JSON.stringify(value), /Private title|private account/);
+
+  document.querySelector = () => null;
+  document.querySelectorAll = (selector) =>
+    selector === "button" ? buttons : [];
+  const errorValue = Function(
+    "document",
+    "location",
+    `return ${expression}`,
+  )(document, { protocol: "app:" });
+  assert.equal(errorValue.primaryRootFound, false);
+  assert.equal(errorValue.genericErrorVisible, true);
+});
+
+test("native binding failure diagnostics use only fixed app-shell facts", () => {
+  const expression = nativeBindingFailureDiagnosticsExpression();
+  const focus = { isConnected: true };
+  const root = {
+    isConnected: true,
+    querySelector: (selector) =>
+      selector === '[data-app-shell-focus-area="main"]' ? focus : null,
+  };
+  const body = { children: Array.from({ length: 150 }, () => ({})) };
+  body.querySelectorAll = () => {
+    throw new Error("diagnostics used a wildcard full-document scan");
+  };
+  Object.defineProperties(body, {
+    textContent: {
+      get: () => {
+        throw new Error("diagnostics read all body textContent");
+      },
+    },
+    innerText: {
+      get: () => {
+        throw new Error("diagnostics read all body innerText");
+      },
+    },
+  });
+  const document = {
+    body,
+    readyState: "interactive",
+    querySelector: (selector) =>
+      selector === 'main[data-app-shell-main-surface="default"]' ? root : null,
+    getElementsByTagName: (tagName) => (tagName === "main" ? [root] : []),
+  };
+
+  const value = Function("document", `return ${expression}`)(document);
+
+  assert.deepEqual(value, {
+    readyState: "interactive",
+    bodyChildren: 150,
+    mainElements: 1,
+    primaryRootFound: true,
+    mainFocusFound: true,
+  });
+  assert.doesNotMatch(expression, /querySelectorAll\s*\(\s*["']\*["']\s*\)/);
+  assert.doesNotMatch(expression, /Object\.(?:keys|entries)\s*\(/);
+  assert.doesNotMatch(expression, /(?:innerText|body\?\.textContent)/);
 });
 
 test("primary app shell readiness stops when its renderer document is replaced", async () => {

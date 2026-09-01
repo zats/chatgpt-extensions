@@ -628,23 +628,40 @@ function primaryAppShellDiagnosticsExpression() {
     const root = document.querySelector('main[data-app-shell-main-surface]');
     const focus = root?.querySelector('[data-app-shell-focus-area="main"]');
     const buttons = Array.from(document.querySelectorAll('button'));
-    const bodyText = typeof document.body?.textContent === 'string'
-      ? document.body.textContent
-      : '';
     const buttonWithLabel = (label) => buttons.some(
       (button) => button.textContent?.trim() === label,
     );
+    const primaryRootFound = root?.isConnected === true;
+    const updateActionVisible = buttonWithLabel('Update ChatGPT');
+    const retryActionVisible = buttonWithLabel('Try again');
     return {
       appProtocol: location.protocol === 'app:',
       documentComplete: document.readyState === 'complete',
       bodyPresent: document.body != null,
       bodyChildren: Math.min(document.body?.children.length ?? 0, 10000),
       mainElements: Math.min(document.querySelectorAll('main').length, 10000),
+      primaryRootFound,
+      mainFocusFound: focus?.isConnected === true,
+      genericErrorVisible:
+        !primaryRootFound && updateActionVisible && retryActionVisible,
+      updateActionVisible,
+      retryActionVisible,
+    };
+  })()`;
+}
+
+function nativeBindingFailureDiagnosticsExpression() {
+  return `(() => {
+    const root = document.querySelector(
+      'main[data-app-shell-main-surface="default"]',
+    );
+    const focus = root?.querySelector('[data-app-shell-focus-area="main"]');
+    return {
+      readyState: document.readyState,
+      bodyChildren: document.body?.children.length ?? 0,
+      mainElements: Math.min(document.getElementsByTagName('main').length, 10000),
       primaryRootFound: root?.isConnected === true,
       mainFocusFound: focus?.isConnected === true,
-      genericErrorVisible: bodyText.includes('Oops, an error has occurred'),
-      updateActionVisible: buttonWithLabel('Update ChatGPT'),
-      retryActionVisible: buttonWithLabel('Try again'),
     };
   })()`;
 }
@@ -2306,17 +2323,7 @@ ${code}
         );
         const documentState = await executeRendererJavaScript(
           contents,
-          `(() => {
-            const elements = Array.from(document.body?.querySelectorAll("*") ?? []);
-            return {
-              readyState: document.readyState,
-              bodyChildren: document.body?.children.length ?? 0,
-              elements: elements.length,
-              reactFiberElements: elements.filter((element) =>
-                Object.keys(element).some((key) => key.startsWith("__reactFiber$")),
-              ).length,
-            };
-          })()`,
+          nativeBindingFailureDiagnosticsExpression(),
           5_000,
         );
         throw new Error(
@@ -3092,6 +3099,7 @@ module.exports = Object.freeze({
   createRendererLifecycle,
   executeRendererJavaScript,
   isCurrentRendererDocument,
+  nativeBindingFailureDiagnosticsExpression,
   primaryAppShellReadyExpression,
   primaryAppShellDiagnosticsExpression,
   productExtensionRealUiFailureDiagnostics,
