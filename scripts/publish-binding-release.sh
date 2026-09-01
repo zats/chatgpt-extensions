@@ -193,7 +193,7 @@ if [[ "$release_exists" == "false" ]]; then
     --target "$SOURCE_SHA" \
     --title "$TITLE" \
     --notes "$NOTES" \
-    --draft 2> "$release_create_error"; then
+    --draft > /dev/null 2> "$release_create_error"; then
     # A concurrent publisher can create the exact draft between the read and create.
     if ! release_state; then
       cat "$release_create_error" >&2
@@ -274,7 +274,7 @@ verify_or_upload() {
       exit 1
     }
     require_exact_tag
-    gh release upload "$TAG" "$file" --repo "$REPOSITORY"
+    gh release upload "$TAG" "$file" --repo "$REPOSITORY" > /dev/null
   fi
 }
 
@@ -301,7 +301,7 @@ if [[ "$(jq -r .draft "$release_json")" == "true" ]]; then
   require_release_identity
   require_exact_assets
   require_exact_tag
-  gh release edit "$TAG" --repo "$REPOSITORY" --draft=false --latest=false
+  gh release edit "$TAG" --repo "$REPOSITORY" --draft=false --latest=false > /dev/null
 fi
 
 gh api "repos/$REPOSITORY/releases/tags/$TAG" > "$release_json"

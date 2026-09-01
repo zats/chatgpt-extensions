@@ -10,6 +10,7 @@ const sourceSha = "a".repeat(40);
 const tag = "binding-26.1.2-v1.0.0";
 const title = "ChatGPT 26.1.2 binding v1.0.0";
 const notes = `Immutable exact-build binding generated and validated from ${sourceSha}.`;
+const releaseUrl = `https://github.com/zats/chatgpt-extensions/releases/tag/${tag}`;
 
 async function fixture(assets, options = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "publish-binding-test."));
@@ -211,6 +212,7 @@ if [[ "\${1:-}" == "release" && "\${2:-}" == "upload" ]]; then
   jq --arg name "$name" --argjson id "$next_id" \
     '.assets += [{id: $id, name: $name}]' "$MOCK_RELEASE_JSON" > "$temporary"
   mv "$temporary" "$MOCK_RELEASE_JSON"
+  printf 'https://github.com/zats/chatgpt-extensions/releases/download/%s/%s\n' "$3" "$name"
   exit 0
 fi
 
@@ -218,6 +220,7 @@ if [[ "\${1:-}" == "release" && "\${2:-}" == "edit" ]]; then
   temporary="\${MOCK_RELEASE_JSON}.tmp"
   jq '.draft = false | .immutable = true' "$MOCK_RELEASE_JSON" > "$temporary"
   mv "$temporary" "$MOCK_RELEASE_JSON"
+  printf 'https://github.com/zats/chatgpt-extensions/releases/tag/%s\n' "$3"
   exit 0
 fi
 
@@ -260,6 +263,10 @@ function publish(value) {
       },
     },
   );
+}
+
+function assertExactReleaseUrl(result) {
+  assert.equal(result.stdout, `${releaseUrl}\n`);
 }
 
 test("published immutable release fails closed when an asset is missing", async () => {
@@ -332,7 +339,7 @@ test("partial exact draft creates and verifies a lightweight tag before assets",
   try {
     const result = publish(value);
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, new RegExp(`/releases/tag/${tag}`));
+    assertExactReleaseUrl(result);
     assert.equal(await readFile(value.tagState, "utf8"), `commit ${sourceSha}\n`);
     const release = JSON.parse(await readFile(value.release, "utf8"));
     assert.equal(release.draft, false);
@@ -361,6 +368,7 @@ test("clean state creates the exact tag before the draft and its assets", async 
   try {
     const result = publish(value);
     assert.equal(result.status, 0, result.stderr);
+    assertExactReleaseUrl(result);
     assert.equal(await readFile(value.tagState, "utf8"), `commit ${sourceSha}\n`);
     const release = JSON.parse(await readFile(value.release, "utf8"));
     assert.equal(release.draft, false);
@@ -392,6 +400,7 @@ test("an exact concurrent tag creation closes the create race", async () => {
   try {
     const result = publish(value);
     assert.equal(result.status, 0, result.stderr);
+    assertExactReleaseUrl(result);
     assert.equal(await readFile(value.tagState, "utf8"), `commit ${sourceSha}\n`);
   } finally {
     await rm(value.root, { recursive: true, force: true });
@@ -426,6 +435,7 @@ test("an exact concurrent draft creation closes the release race", async () => {
   try {
     const result = publish(value);
     assert.equal(result.status, 0, result.stderr);
+    assertExactReleaseUrl(result);
   } finally {
     await rm(value.root, { recursive: true, force: true });
   }
