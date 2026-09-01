@@ -169,3 +169,19 @@ test("a preload without a bootstrap document has no runtime or event path", asyn
   assert.equal(state.scripts.length, 0);
   assert.deepEqual(state.sent, []);
 });
+
+test("an auxiliary main-frame preload does not install the binding host", async () => {
+  const state = runPreload({ bootstrap: null });
+
+  assert.equal(state.sendSyncCalls(), 1);
+  assert.equal(state.scripts.length, 0);
+  await assert.rejects(
+    state.exposed.request("runtime.info", { extensionId: "test" }),
+    /renderer document is unavailable/,
+  );
+
+  state.eventListeners.get("pagehide")();
+  assert.deepEqual(state.sent, [
+    ["chatgptx:v5:renderer-pagehide", null],
+  ]);
+});

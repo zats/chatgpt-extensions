@@ -5359,6 +5359,10 @@ function occurrenceCount(source, value) {
   }
 }
 
+function isPrimaryWindowOptions(options) {
+  return options?.webPreferences?.scrollBounce === true;
+}
+
 function patchBindingHostSource(options) {
   if (!options || typeof options !== "object") {
     throw new TypeError("Binding host patch options are required");
@@ -5400,5 +5404,6 @@ function patchBindingHostSource(options) {
 }
 
 module.exports = Object.freeze({
+  isPrimaryWindowOptions,
   patchBindingHostSource,
 });

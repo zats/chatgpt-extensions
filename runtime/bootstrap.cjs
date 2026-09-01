@@ -397,7 +397,8 @@ function productExtensionRealUiDiagnosticsReady(diagnostics) {
   const header = threadColors?.header;
   const activity = threadColors?.activity;
   const standard = threadColors?.standard;
-  const cloud = threadColors?.cloud;
+  const remoteCodex = threadColors?.remoteCodex;
+  const chatGptCloud = threadColors?.chatGptCloud;
   const reactions = diagnostics?.reactions;
   const settings = diagnostics?.settings;
   const stored = threadColors?.stored;
@@ -412,6 +413,25 @@ function productExtensionRealUiDiagnosticsReady(diagnostics) {
     layout?.indicatorBackground === "rgb(58, 131, 247)" &&
     Math.abs((layout?.indicator?.width ?? 0) - 3) <= 0.5 &&
     Math.abs((layout?.titleGap ?? Number.NaN) - 3) <= 0.75;
+  const storedThreadMatches = (entry, expected) =>
+    entry?.thread?.scope === expected?.scope &&
+    entry.thread.threadId === expected.threadId &&
+    (expected.scope === "execution"
+      ? entry.thread.hostId === expected.hostId
+      : entry.thread.accountId === expected.accountId &&
+        entry.thread.workspaceId === expected.workspaceId) &&
+    entry?.selection?.type === "preset" &&
+    entry.selection.id === "blue";
+  const chatGptCloudReady =
+    chatGptCloud?.ownerObserved !== true ||
+    (chatGptCloud?.thread?.scope === "cloud" &&
+      chatGptCloud.thread.mode === "chatgpt" &&
+      chatGptCloud.thread.location === "cloud" &&
+      chatGptCloud?.menuActionFound === true &&
+      chatGptCloud?.menuActionClicked === true &&
+      chatGptCloud?.ownerMatched === true &&
+      layoutReady(chatGptCloud?.layout) &&
+      storedThreadMatches(chatGptCloud?.stored, chatGptCloud.thread));
   return (
     diagnostics?.realDom === true &&
     thread?.scope === "execution" &&
@@ -422,30 +442,30 @@ function productExtensionRealUiDiagnosticsReady(diagnostics) {
     thread.threadId !== "chatgptx-product-extension-probe" &&
     typeof thread?.title === "string" &&
     thread.title.length > 0 &&
-    thread?.signedInHeaderTitleFound === true &&
     threadColors?.nativeMenuTrigger === true &&
     threadColors?.nativeMenuAction === true &&
     threadColors?.nativeFlyoutAction === true &&
     header?.found === true &&
-    header?.titleFound === true &&
     header?.blueRegionFound === true &&
     header?.background === "rgb(58, 131, 247)" &&
     layoutReady(activity) &&
     layoutReady(standard) &&
     threadColors?.activityRowIsTaller === true &&
-    cloud?.scope === "cloud" &&
-    cloud?.menuActionFound === true &&
-    cloud?.menuActionClicked === true &&
-    cloud?.ownerMatched === true &&
-    layoutReady(cloud?.layout) &&
-    cloud?.stored?.scope === "cloud" &&
-    cloud?.stored?.selection?.type === "preset" &&
-    cloud.stored.selection.id === "blue" &&
-    stored?.thread?.scope === thread.scope &&
-    stored.thread.hostId === thread.hostId &&
-    stored.thread.threadId === thread.threadId &&
-    stored?.selection?.type === "preset" &&
-    stored.selection.id === "blue" &&
+    remoteCodex?.component === "RemoteSidebarThreadRow" &&
+    remoteCodex?.fixture === "task" &&
+    remoteCodex?.thread?.scope === "cloud" &&
+    remoteCodex.thread.mode === "codex" &&
+    remoteCodex.thread.location === "remote" &&
+    remoteCodex?.menuActionFound === true &&
+    remoteCodex?.menuActionClicked === true &&
+    remoteCodex?.ownerMatched === true &&
+    layoutReady(remoteCodex?.standard) &&
+    layoutReady(remoteCodex?.activity) &&
+    remoteCodex?.activityRowIsTaller === true &&
+    remoteCodex?.disposed === true &&
+    storedThreadMatches(remoteCodex?.stored, remoteCodex.thread) &&
+    chatGptCloudReady &&
+    storedThreadMatches(stored, thread) &&
     reactions?.targetFound === true &&
     typeof reactions?.selectedText === "string" &&
     reactions.selectedText.length > 0 &&
@@ -474,7 +494,8 @@ function productExtensionRealUiDiagnosticsReady(diagnostics) {
 function sanitizeProductExtensionRealUiDiagnostics(diagnostics) {
   const thread = diagnostics?.thread;
   const threadColors = diagnostics?.threadColors;
-  const cloud = threadColors?.cloud;
+  const remoteCodex = threadColors?.remoteCodex;
+  const chatGptCloud = threadColors?.chatGptCloud;
   const stored = threadColors?.stored;
   const reactions = diagnostics?.reactions;
   const persistedReaction = reactions?.persisted;
@@ -486,6 +507,22 @@ function sanitizeProductExtensionRealUiDiagnostics(diagnostics) {
     Object.freeze({
       type: selection?.type === "preset" ? "preset" : null,
       id: selection?.id === "blue" ? "blue" : null,
+    });
+  const safeCloudThread = (value, mode, location) =>
+    Object.freeze({
+      scope: value?.scope === "cloud" ? "cloud" : null,
+      accountId: present(value?.accountId, "redacted-account"),
+      workspaceId: present(value?.workspaceId, "redacted-workspace"),
+      threadId: present(value?.threadId, realUiDiagnosticRedactions.threadId),
+      ...(mode === undefined ? {} : { mode: value?.mode === mode ? mode : null }),
+      ...(location === undefined
+        ? {}
+        : { location: value?.location === location ? location : null }),
+    });
+  const safeCloudStored = (value) =>
+    Object.freeze({
+      thread: safeCloudThread(value?.thread, undefined, undefined),
+      selection: preset(value?.selection),
     });
 
   return Object.freeze({
@@ -501,7 +538,6 @@ function sanitizeProductExtensionRealUiDiagnostics(diagnostics) {
       hostId: present(thread?.hostId, realUiDiagnosticRedactions.hostId),
       threadId: present(thread?.threadId, realUiDiagnosticRedactions.threadId),
       title: present(thread?.title, realUiDiagnosticRedactions.title),
-      signedInHeaderTitleFound: thread?.signedInHeaderTitleFound === true,
     }),
     threadColors: Object.freeze({
       nativeMenuTrigger: threadColors?.nativeMenuTrigger === true,
@@ -519,16 +555,38 @@ function sanitizeProductExtensionRealUiDiagnostics(diagnostics) {
       activity: safeRealUiLayout(threadColors?.activity),
       standard: safeRealUiLayout(threadColors?.standard),
       activityRowIsTaller: threadColors?.activityRowIsTaller === true,
-      cloud: Object.freeze({
-        scope: cloud?.scope === "cloud" ? "cloud" : null,
-        menuActionFound: cloud?.menuActionFound === true,
-        menuActionClicked: cloud?.menuActionClicked === true,
-        ownerMatched: cloud?.ownerMatched === true,
-        layout: safeRealUiLayout(cloud?.layout),
-        stored: Object.freeze({
-          scope: cloud?.stored?.scope === "cloud" ? "cloud" : null,
-          selection: preset(cloud?.stored?.selection),
-        }),
+      remoteCodex: Object.freeze({
+        component:
+          remoteCodex?.component === "RemoteSidebarThreadRow"
+            ? "RemoteSidebarThreadRow"
+            : null,
+        fixture: remoteCodex?.fixture === "task" ? "task" : null,
+        thread: safeCloudThread(remoteCodex?.thread, "codex", "remote"),
+        menuActionFound: remoteCodex?.menuActionFound === true,
+        menuActionClicked: remoteCodex?.menuActionClicked === true,
+        ownerMatched: remoteCodex?.ownerMatched === true,
+        standard: safeRealUiLayout(remoteCodex?.standard),
+        activity: safeRealUiLayout(remoteCodex?.activity),
+        activityRowIsTaller: remoteCodex?.activityRowIsTaller === true,
+        disposed: remoteCodex?.disposed === true,
+        stored: safeCloudStored(remoteCodex?.stored),
+      }),
+      chatGptCloud: Object.freeze({
+        ownerObserved: chatGptCloud?.ownerObserved === true,
+        ...(chatGptCloud?.ownerObserved !== true
+          ? {}
+          : {
+              thread: safeCloudThread(
+                chatGptCloud?.thread,
+                "chatgpt",
+                "cloud",
+              ),
+              menuActionFound: chatGptCloud?.menuActionFound === true,
+              menuActionClicked: chatGptCloud?.menuActionClicked === true,
+              ownerMatched: chatGptCloud?.ownerMatched === true,
+              layout: safeRealUiLayout(chatGptCloud?.layout),
+              stored: safeCloudStored(chatGptCloud?.stored),
+            }),
       }),
       stored: Object.freeze({
         thread: Object.freeze({
@@ -837,7 +895,7 @@ function createRendererLifecycle(options) {
   function ready(contents) {
     if (contents.isDestroyed?.()) return;
     const url = contents.getURL();
-    if (!options.isEligible(url)) {
+    if (!options.isEligible(url, contents)) {
       disconnect(contents, "ineligible-document");
       forget(contents);
       return;
@@ -1266,9 +1324,16 @@ function initialize() {
   let rendererHostSource;
   let hostSource;
   let hostSourceDigest;
+  let isPrimaryWindowOptions;
   let patchBindingHostSource;
   try {
-    ({ patchBindingHostSource } = require(launch.binding.patchFile));
+    ({
+      isPrimaryWindowOptions,
+      patchBindingHostSource,
+    } = require(launch.binding.patchFile));
+    if (typeof isPrimaryWindowOptions !== "function") {
+      throw new Error("The binding patch does not export isPrimaryWindowOptions");
+    }
     if (typeof patchBindingHostSource !== "function") {
       throw new Error("The binding patch does not export patchBindingHostSource");
     }
@@ -1310,6 +1375,7 @@ function initialize() {
   let electronNamespace;
   let mainHost;
   let rendererLifecycle;
+  const primaryRendererContents = new WeakSet();
 
   function stopRichContentProbePoller(documentId) {
     const stop = richContentProbePollers.get(documentId);
@@ -2038,8 +2104,11 @@ function initialize() {
         const stored = value?.colors?.find(
           (entry) =>
             entry?.thread?.scope === thread.scope &&
-            entry.thread.hostId === thread.hostId &&
             entry.thread.threadId === thread.threadId &&
+            (thread.scope === "execution"
+              ? entry.thread.hostId === thread.hostId
+              : entry.thread.accountId === thread.accountId &&
+                entry.thread.workspaceId === thread.workspaceId) &&
             entry?.selection?.type === "preset" &&
             entry.selection.id === "blue",
         );
@@ -2051,45 +2120,6 @@ function initialize() {
     }
     throw new Error(
       `Thread Colors did not persist the probe selection (${diagnosticErrorName(lastError)})`,
-    );
-  }
-
-  async function waitForThreadColorScopePersistence(
-    scope,
-    timeoutMilliseconds,
-  ) {
-    const file = path.join(
-      launch.storageDirectory,
-      "thread-colors",
-      "settings.json",
-    );
-    const deadline = Date.now() + timeoutMilliseconds;
-    let lastError;
-    while (Date.now() < deadline) {
-      try {
-        const value = JSON.parse(fs.readFileSync(file, "utf8"));
-        const stored = value?.colors?.find(
-          (entry) =>
-            entry?.thread?.scope === scope &&
-            entry?.selection?.type === "preset" &&
-            entry.selection.id === "blue",
-        );
-        if (stored) {
-          return Object.freeze({
-            scope: stored.thread.scope,
-            selection: Object.freeze({
-              type: stored.selection.type,
-              id: stored.selection.id,
-            }),
-          });
-        }
-      } catch (error) {
-        lastError = error;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
-    throw new Error(
-      `Thread Colors did not persist a ${scope} probe selection (${diagnosticErrorName(lastError)})`,
     );
   }
 
@@ -2149,10 +2179,17 @@ function initialize() {
       );
       throw new Error("The real product extension UI probe failed");
     }
-    const cloudStored = await waitForThreadColorScopePersistence(
-      "cloud",
+    const remoteCodexStored = await waitForThreadColorPersistence(
+      diagnostics?.threadColors?.remoteCodex?.thread ?? {},
       10_000,
     );
+    const chatGptCloudStored =
+      diagnostics?.threadColors?.chatGptCloud?.ownerObserved === true
+        ? await waitForThreadColorPersistence(
+            diagnostics.threadColors.chatGptCloud.thread ?? {},
+            10_000,
+          )
+        : undefined;
     const complete = {
       ...diagnostics,
       rendererDocumentId: document.id,
@@ -2162,9 +2199,15 @@ function initialize() {
           diagnostics?.thread ?? {},
           10_000,
         ),
-        cloud: {
-          ...diagnostics?.threadColors?.cloud,
-          stored: cloudStored,
+        remoteCodex: {
+          ...diagnostics?.threadColors?.remoteCodex,
+          stored: remoteCodexStored,
+        },
+        chatGptCloud: {
+          ...diagnostics?.threadColors?.chatGptCloud,
+          ...(chatGptCloudStored === undefined
+            ? {}
+            : { stored: chatGptCloudStored }),
         },
       },
     };
@@ -2753,7 +2796,8 @@ ${code}
         const owner = BrowserWindow.fromWebContents(contents);
         return owner ? `window:${owner.id}` : `window:contents-${contents.id}`;
       },
-      isEligible: (url) => url.startsWith("app:"),
+      isEligible: (url, contents) =>
+        url.startsWith("app:") && primaryRendererContents.has(contents),
       inject: (contents, document) =>
         injectIntoContents(contents, entries, document),
       connect(document) {
@@ -2780,8 +2824,11 @@ ${code}
 
     function appSender(event) {
       const url = event.senderFrame?.url ?? event.sender.getURL();
-      if (!url.startsWith("app:")) {
-        throw new Error("ChatGPTX runtime requests are limited to app pages");
+      if (
+        !url.startsWith("app:") ||
+        !primaryRendererContents.has(event.sender)
+      ) {
+        throw new Error("ChatGPTX runtime requests are limited to primary app pages");
       }
       return url;
     }
@@ -3056,18 +3103,22 @@ ${code}
     const OriginalBrowserWindow = BrowserWindow;
     const PatchedBrowserWindow = class extends OriginalBrowserWindow {
       constructor(options) {
+        const primary = isPrimaryWindowOptions(options);
         const preferences = options?.webPreferences ?? {};
         const targetSession =
           preferences.session ??
           (preferences.partition
             ? session.fromPartition(preferences.partition)
             : session.defaultSession);
-        const preloads = targetSession.getPreloads();
-        if (!preloads.includes(preloadFile)) {
-          targetSession.setPreloads([...preloads, preloadFile]);
+        if (primary) {
+          const preloads = targetSession.getPreloads();
+          if (!preloads.includes(preloadFile)) {
+            targetSession.setPreloads([...preloads, preloadFile]);
+          }
         }
         super(options);
-        log("window-created", { preload: preloadFile });
+        if (primary) primaryRendererContents.add(this.webContents);
+        log("window-created", { primary });
       }
     };
     Object.setPrototypeOf(PatchedBrowserWindow, OriginalBrowserWindow);

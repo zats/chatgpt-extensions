@@ -410,7 +410,15 @@ function summarizedPassedGateEvidence(name, evidence, expectations) {
         headerColorApplied: flag(evidence?.headerColorApplied),
         activityLayoutVerified: flag(evidence?.activityLayoutVerified),
         standardLayoutVerified: flag(evidence?.standardLayoutVerified),
-        cloudLayoutVerified: flag(evidence?.cloudLayoutVerified),
+        remoteCodexLayoutVerified: flag(
+          evidence?.remoteCodexLayoutVerified,
+        ),
+        chatGptCloudOwnerObserved: flag(
+          evidence?.chatGptCloudOwnerObserved,
+        ),
+        chatGptCloudLayoutVerified: flag(
+          evidence?.chatGptCloudLayoutVerified,
+        ),
         reactionApplied: flag(evidence?.reactionApplied),
         settingsVerified: flag(evidence?.settingsVerified),
       });

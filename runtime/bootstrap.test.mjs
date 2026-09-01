@@ -272,7 +272,6 @@ function completeProductExtensionRealUiDiagnostics() {
       hostId: "local",
       threadId: "real-thread",
       title: "Real thread",
-      signedInHeaderTitleFound: true,
     },
     threadColors: {
       nativeMenuTrigger: true,
@@ -287,17 +286,35 @@ function completeProductExtensionRealUiDiagnostics() {
       activity: { ...layout, row: { height: 54 } },
       standard: { ...layout, row: { height: 36 } },
       activityRowIsTaller: true,
-      cloud: {
-        scope: "cloud",
+      remoteCodex: {
+        component: "RemoteSidebarThreadRow",
+        fixture: "task",
+        thread: {
+          scope: "cloud",
+          accountId: "account-a",
+          workspaceId: "workspace-a",
+          threadId: "remote-task",
+          mode: "codex",
+          location: "remote",
+        },
         menuActionFound: true,
         menuActionClicked: true,
         ownerMatched: true,
-        layout: { ...layout, row: { height: 36 } },
+        standard: { ...layout, row: { height: 36 } },
+        activity: { ...layout, row: { height: 54 } },
+        activityRowIsTaller: true,
+        disposed: true,
         stored: {
-          scope: "cloud",
+          thread: {
+            scope: "cloud",
+            accountId: "account-a",
+            workspaceId: "workspace-a",
+            threadId: "remote-task",
+          },
           selection: { type: "preset", id: "blue" },
         },
       },
+      chatGptCloud: { ownerObserved: false },
       stored: {
         thread: {
           scope: "execution",
@@ -401,13 +418,26 @@ test("real product diagnostics require actual owners and both sidebar layouts", 
       ...diagnostics,
       threadColors: {
         ...diagnostics.threadColors,
-        cloud: {
-          ...diagnostics.threadColors.cloud,
+        remoteCodex: {
+          ...diagnostics.threadColors.remoteCodex,
           ownerMatched: false,
         },
       },
     }),
     false,
+  );
+  assert.equal(
+    productExtensionRealUiDiagnosticsReady({
+      ...diagnostics,
+      threadColors: {
+        ...diagnostics.threadColors,
+        header: {
+          ...diagnostics.threadColors.header,
+          titleFound: false,
+        },
+      },
+    }),
+    true,
   );
   assert.equal(
     productExtensionRealUiDiagnosticsReady({
@@ -1285,7 +1315,7 @@ class FakeContents extends EventEmitter {
   }
 }
 
-function harness() {
+function harness(isEligible = (url) => url.startsWith("app:")) {
   let sequence = 0;
   const injected = [];
   const connected = [];
@@ -1294,7 +1324,7 @@ function harness() {
   const lifecycle = createRendererLifecycle({
     createDocumentId: () => `document-${++sequence}`,
     windowId: (contents) => `window-${contents.id}`,
-    isEligible: (url) => url.startsWith("app:"),
+    isEligible,
     inject(contents, document) {
       injected.push({ contents, document });
     },
@@ -1310,6 +1340,27 @@ function harness() {
   });
   return { connected, disconnected, errors, injected, lifecycle };
 }
+
+test("renderer eligibility receives the exact web contents identity", () => {
+  const primary = new FakeContents(20, "app://chatgpt.com/");
+  const auxiliary = new FakeContents(21, "app://chatgpt.com/");
+  const state = harness(
+    (url, contents) => url.startsWith("app:") && contents === primary,
+  );
+
+  state.lifecycle.attach(primary);
+  state.lifecycle.attach(auxiliary);
+
+  assert.deepEqual(
+    state.injected.map(({ contents }) => contents.id),
+    [primary.id],
+  );
+  assert.deepEqual(
+    state.connected.map(({ webContentsId }) => webContentsId),
+    [primary.id],
+  );
+  assert.deepEqual(state.errors, []);
+});
 
 test("renderer attachment does not wait for main activation", async () => {
   const first = new FakeContents(1, "app://chatgpt.com/");

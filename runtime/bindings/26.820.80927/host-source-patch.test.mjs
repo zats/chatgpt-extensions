@@ -4,7 +4,20 @@ import test from "node:test";
 
 import patchModule from "./host-source-patch.cjs";
 
-const { patchBindingHostSource } = patchModule;
+const { isPrimaryWindowOptions, patchBindingHostSource } = patchModule;
+
+test("exact window appearance mapping selects only ChatGPT primary windows", () => {
+  assert.equal(
+    isPrimaryWindowOptions({ webPreferences: { scrollBounce: true } }),
+    true,
+  );
+  assert.equal(
+    isPrimaryWindowOptions({ webPreferences: { scrollBounce: false } }),
+    false,
+  );
+  assert.equal(isPrimaryWindowOptions({ webPreferences: {} }), false);
+  assert.equal(isPrimaryWindowOptions(undefined), false);
+});
 
 const fiberOfSource = `  function fiberOf(node) {
     const key = Object.keys(node).find((candidate) =>

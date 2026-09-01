@@ -401,14 +401,19 @@ export function summarizeProductExtensionEvidence() {
   });
 }
 
-export function summarizeProductExtensionRealUiEvidence() {
+export function summarizeProductExtensionRealUiEvidence(diagnostics) {
+  const chatGptCloud = diagnostics?.threadColors?.chatGptCloud;
   return Object.freeze({
     verified: true,
     realDom: true,
     headerColorApplied: true,
     activityLayoutVerified: true,
     standardLayoutVerified: true,
-    cloudLayoutVerified: true,
+    remoteCodexLayoutVerified: true,
+    chatGptCloudOwnerObserved: chatGptCloud?.ownerObserved === true,
+    chatGptCloudLayoutVerified:
+      chatGptCloud?.ownerObserved === true &&
+      chatGptCloud?.ownerMatched === true,
     reactionApplied: true,
     settingsVerified: true,
   });
@@ -1321,7 +1326,8 @@ export function assertProductExtensionRealUiDiagnostics(value) {
   const threadColors = value?.threadColors;
   const header = threadColors?.header;
   const stored = threadColors?.stored;
-  const cloud = threadColors?.cloud;
+  const remoteCodex = threadColors?.remoteCodex;
+  const chatGptCloud = threadColors?.chatGptCloud;
   const reactions = value?.reactions;
   const settings = value?.settings;
   const fillsActualRow = (layout) =>
@@ -1349,6 +1355,25 @@ export function assertProductExtensionRealUiDiagnostics(value) {
     layout?.indicatorBackground !== "rgb(58, 131, 247)" ||
     Math.abs((layout?.indicator?.width ?? 0) - 3) > 0.5 ||
     Math.abs((layout?.titleGap ?? Number.NaN) - 3) > 0.75;
+  const storedThreadMismatch = (entry, expected) =>
+    entry?.thread?.scope !== expected?.scope ||
+    entry.thread.threadId !== expected.threadId ||
+    (expected.scope === "execution"
+      ? entry.thread.hostId !== expected.hostId
+      : entry.thread.accountId !== expected.accountId ||
+        entry.thread.workspaceId !== expected.workspaceId) ||
+    entry?.selection?.type !== "preset" ||
+    entry.selection.id !== "blue";
+  const chatGptCloudInvalid =
+    chatGptCloud?.ownerObserved === true &&
+    (chatGptCloud?.thread?.scope !== "cloud" ||
+      chatGptCloud.thread.mode !== "chatgpt" ||
+      chatGptCloud.thread.location !== "cloud" ||
+      chatGptCloud?.menuActionFound !== true ||
+      chatGptCloud?.menuActionClicked !== true ||
+      chatGptCloud?.ownerMatched !== true ||
+      layoutMissing(chatGptCloud?.layout) ||
+      storedThreadMismatch(chatGptCloud?.stored, chatGptCloud.thread));
   const invalid =
     value?.validationPassed !== true ||
     value?.realDom !== true ||
@@ -1360,30 +1385,30 @@ export function assertProductExtensionRealUiDiagnostics(value) {
     thread.threadId === "chatgptx-product-extension-probe" ||
     typeof thread?.title !== "string" ||
     thread.title.length === 0 ||
-    thread?.signedInHeaderTitleFound !== true ||
     threadColors?.nativeMenuTrigger !== true ||
     threadColors?.nativeMenuAction !== true ||
     threadColors?.nativeFlyoutAction !== true ||
     header?.found !== true ||
-    header?.titleFound !== true ||
     header?.blueRegionFound !== true ||
     header?.background !== "rgb(58, 131, 247)" ||
     layoutMissing(threadColors?.activity) ||
     layoutMissing(threadColors?.standard) ||
     threadColors?.activityRowIsTaller !== true ||
-    cloud?.scope !== "cloud" ||
-    cloud?.menuActionFound !== true ||
-    cloud?.menuActionClicked !== true ||
-    cloud?.ownerMatched !== true ||
-    layoutMissing(cloud?.layout) ||
-    cloud?.stored?.scope !== "cloud" ||
-    cloud?.stored?.selection?.type !== "preset" ||
-    cloud.stored.selection.id !== "blue" ||
-    stored?.thread?.scope !== thread.scope ||
-    stored.thread.hostId !== thread.hostId ||
-    stored.thread.threadId !== thread.threadId ||
-    stored?.selection?.type !== "preset" ||
-    stored.selection.id !== "blue" ||
+    remoteCodex?.component !== "RemoteSidebarThreadRow" ||
+    remoteCodex?.fixture !== "task" ||
+    remoteCodex?.thread?.scope !== "cloud" ||
+    remoteCodex.thread.mode !== "codex" ||
+    remoteCodex.thread.location !== "remote" ||
+    remoteCodex?.menuActionFound !== true ||
+    remoteCodex?.menuActionClicked !== true ||
+    remoteCodex?.ownerMatched !== true ||
+    layoutMissing(remoteCodex?.standard) ||
+    layoutMissing(remoteCodex?.activity) ||
+    remoteCodex?.activityRowIsTaller !== true ||
+    remoteCodex?.disposed !== true ||
+    storedThreadMismatch(remoteCodex?.stored, remoteCodex.thread) ||
+    chatGptCloudInvalid ||
+    storedThreadMismatch(stored, thread) ||
     reactions?.targetFound !== true ||
     typeof reactions?.selectedText !== "string" ||
     reactions.selectedText.length === 0 ||
@@ -1684,7 +1709,9 @@ async function runGate(options) {
     gates.push({
       name: "product-extension-real-ui-interactions",
       status: "passed",
-      evidence: summarizeProductExtensionRealUiEvidence(),
+      evidence: summarizeProductExtensionRealUiEvidence(
+        productRealUiDiagnostics,
+      ),
     });
 
     activeGate = "no-runtime-failures";

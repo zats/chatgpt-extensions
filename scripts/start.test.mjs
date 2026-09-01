@@ -907,7 +907,6 @@ test("the real product gate rejects synthetic and incomplete DOM evidence", () =
           hostId: "local",
           threadId: "chatgptx-product-extension-probe",
           title: "Synthetic",
-          signedInHeaderTitleFound: true,
         },
       }),
     /Real product extension UI diagnostics are incomplete/,

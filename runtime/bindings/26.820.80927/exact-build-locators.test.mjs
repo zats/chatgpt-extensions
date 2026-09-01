@@ -34,6 +34,8 @@ const patchedModules = Object.freeze({
 });
 
 const researchAssets = Object.freeze({
+  ".vite/build/main-Chzli0KN.js":
+    "db89fc7fad3198c13dcefdc914d2beb9ffd194877bfe2fcd163022d9198725a4",
   "webview/assets/composer-utility-bar-BApXxy3L.js":
     "5374c42903d688dd5f8fd7d0b2f515059036e5c3359f41008e59fa47bb79d7b4",
   "webview/assets/plus-BgCJgEEs-DfzxPQNa.js":
@@ -174,5 +176,15 @@ test(
       const bytes = await readFile(join(researchTree, relativePath));
       assert.equal(createHash("sha256").update(bytes).digest("hex"), expected);
     }
+    const main = await readFile(
+      join(researchTree, ".vite/build/main-Chzli0KN.js"),
+      "utf8",
+    );
+    assert.ok(
+      main.includes(
+        "scrollBounce:process.platform===`darwin`&&o===`primary`",
+      ),
+      "ChatGPT primary window appearance discriminator",
+    );
   },
 );
