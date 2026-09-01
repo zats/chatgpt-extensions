@@ -1100,8 +1100,9 @@ test("the gate waits for the complete thread fixture schema", () => {
       return "id\ntitle\n";
     });
     assert.equal(sqliteInvocation.executable, "/usr/bin/sqlite3");
-    assert.deepEqual(sqliteInvocation.arguments.slice(0, 5), [
-      "-noinit",
+    assert.deepEqual(sqliteInvocation.arguments.slice(0, 6), [
+      "-init",
+      "/dev/null",
       "-batch",
       "-noheader",
       "-list",

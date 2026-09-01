@@ -600,7 +600,8 @@ export function threadFixtureSchemaReady(stateFile, executeSqlite = execFileSync
     const rows = executeSqlite(
       "/usr/bin/sqlite3",
       [
-        "-noinit",
+        "-init",
+        "/dev/null",
         "-batch",
         "-noheader",
         "-list",
