@@ -16,6 +16,7 @@ import {
   decideQueuedBatchRecovery,
   issueBody,
   issueTitle,
+  pendingRedriveAttempts,
   repositoryDispatchBody,
   requestFromEvent,
   requestsFromSnapshot,
@@ -705,6 +706,26 @@ test("startup failure before a retry start marker permits one bounded redrive", 
       dispatchAttempts: 2,
     }),
     "ignore",
+  );
+});
+
+test("a reopened issue gets a new bounded pending-delivery cycle", () => {
+  const bot = (body, createdAt) => ({
+    body,
+    created_at: createdAt,
+    user: { login: "github-actions[bot]" },
+  });
+  const comments = [
+    bot("<!-- chatgpt-rebind-pending-redrive-v1 1 -->", "2026-08-31T10:00:00Z"),
+    bot("<!-- chatgpt-rebind-pending-redrive-v1 1 -->", "2026-08-31T12:00:00Z"),
+  ];
+  assert.equal(
+    pendingRedriveAttempts(comments, Date.parse("2026-08-31T11:00:00Z")),
+    1,
+  );
+  assert.equal(
+    pendingRedriveAttempts(comments, Date.parse("2026-08-31T13:00:00Z")),
+    0,
   );
 });
 

@@ -647,6 +647,8 @@ test("failed runs settle only after the bounded transient classifier", async () 
   assert.match(trigger, /\["retry-transient", "settle-failed"\]/);
   assert.match(trigger, /shouldRetryTransientFailure/);
   assert.match(trigger, /chatgpt-rebind-pending-redrive-v1/);
+  assert.match(trigger, /issues\/\$\{issue\.number\}\/timeline\?per_page=100/);
+  assert.match(trigger, /select\(\.event == "reopened"\)/);
   assert.match(trigger, /decision === "retry-transient"/);
   const retry = trigger.slice(
     trigger.indexOf("async function retryTransientRun"),

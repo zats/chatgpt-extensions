@@ -491,7 +491,7 @@ function issueComments(repository, issueNumber) {
     "--paginate",
     `repos/${repository}/issues/${issueNumber}/comments?per_page=100`,
     "--jq",
-    '.[] | select(.user.login == "github-actions[bot]") | {id, body, user: {login: .user.login}}',
+    '.[] | select(.user.login == "github-actions[bot]") | {id, body, created_at, user: {login: .user.login}}',
   ]).trim();
   if (output === "") return [];
   return output.split("\n").map((line) => JSON.parse(line));
@@ -773,13 +773,40 @@ function recentRescueMarker(comments, now = Date.now()) {
   });
 }
 
-function pendingRedriveAttempts(comments) {
+export function pendingRedriveAttempts(comments, cycleStartedAt) {
+  if (!Array.isArray(comments) || !Number.isFinite(cycleStartedAt)) {
+    throw new TypeError("Pending redrive history requires one issue cycle boundary");
+  }
   return comments.filter((comment) => {
     if (comment?.user?.login !== "github-actions[bot]" || typeof comment.body !== "string") {
       return false;
     }
-    return /^<!-- chatgpt-rebind-pending-redrive-v1 [1-9]\d* -->$/.test(comment.body);
+    const createdAt = Date.parse(comment.created_at ?? "");
+    return (
+      Number.isFinite(createdAt) &&
+      createdAt >= cycleStartedAt &&
+      /^<!-- chatgpt-rebind-pending-redrive-v1 [1-9]\d* -->$/.test(comment.body)
+    );
   }).length;
+}
+
+function issueCycleStartedAt(repository, issue) {
+  let startedAt = Date.parse(issue?.created_at ?? "");
+  if (!Number.isFinite(startedAt)) {
+    throw new TypeError(`Issue ${issue?.number ?? "unknown"} has no creation time`);
+  }
+  const output = runGh([
+    "api",
+    "--paginate",
+    `repos/${repository}/issues/${issue.number}/timeline?per_page=100`,
+    "--jq",
+    '.[] | select(.event == "reopened") | .created_at',
+  ]).trim();
+  for (const value of output === "" ? [] : output.split("\n")) {
+    const reopenedAt = Date.parse(value);
+    if (Number.isFinite(reopenedAt) && reopenedAt > startedAt) startedAt = reopenedAt;
+  }
+  return startedAt;
 }
 
 function transientFailureForRun(repository, run) {
@@ -1038,11 +1065,19 @@ async function rescueRepository(repository, workerActor) {
     const run = runId
       ? JSON.parse(runGh(["api", `repos/${repository}/actions/runs/${runId}`]))
       : undefined;
+    const labels = labelsOf(listed);
+    const pendingAttempts =
+      labels.includes("pending") || (labels.includes("in-progress") && !run)
+        ? pendingRedriveAttempts(
+            comments,
+            issueCycleStartedAt(repository, listed),
+          )
+        : 0;
     const retryContext = {
       sourceRunId: automaticRetrySource,
       latestRunId: runId,
       dispatchAttempts: automaticRetryDispatchCount,
-      pendingRedriveAttempts: pendingRedriveAttempts(comments),
+      pendingRedriveAttempts: pendingAttempts,
     };
     let decision = decideIssueRescue(listed, run, Date.now(), retryContext);
     if (decision === "fail" && run) {
