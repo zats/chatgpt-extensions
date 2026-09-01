@@ -16,6 +16,7 @@ import {
   decideQueuedBatchRecovery,
   issueBody,
   issueTitle,
+  repositoryDispatchBody,
   requestFromEvent,
   requestsFromSnapshot,
   retryLineageForRun,
@@ -269,14 +270,14 @@ process.stdout.write(process.env.GH_TEST_ISSUE);
 test("trusted repository dispatch can mark an exact failed issue retry", () => {
   const result = requestFromEvent("repository_dispatch", {
     action: "chatgpt-rebind",
-    client_payload: { ...current, issueNumber: 22, retry: true },
+    client_payload: { request: current, issueNumber: 22, retry: true },
   });
   assert.equal(result.retry, true);
   assert.equal(result.issueNumber, 22);
   const automatic = requestFromEvent("repository_dispatch", {
     action: "chatgpt-rebind",
     client_payload: {
-      ...current,
+      request: current,
       issueNumber: 22,
       retry: true,
       automaticRetrySourceRunId: 100,
@@ -288,12 +289,45 @@ test("trusted repository dispatch can mark an exact failed issue retry", () => {
       requestFromEvent("repository_dispatch", {
         action: "chatgpt-rebind",
         client_payload: {
-          ...current,
+          request: current,
           issueNumber: 22,
           automaticRetrySourceRunId: 100,
         },
       }),
     /positive retry lineage ID/,
+  );
+  assert.throws(
+    () =>
+      requestFromEvent("repository_dispatch", {
+        action: "chatgpt-rebind",
+        client_payload: { ...current, issueNumber: 22, retry: true },
+      }),
+    /unexpected or missing fields/,
+  );
+});
+
+test("repository dispatch nests the exact request below the GitHub field limit", () => {
+  const backtest = {
+    ...current,
+    mode: "backtest",
+    snapshotSha256: "a".repeat(64),
+    batchId: batchA,
+    offset: 0,
+  };
+  const body = repositoryDispatchBody(backtest, 22, true, 100);
+  assert.deepEqual(body, {
+    event_type: "chatgpt-rebind",
+    client_payload: {
+      request: validateRequest(backtest),
+      issueNumber: 22,
+      retry: true,
+      automaticRetrySourceRunId: 100,
+    },
+  });
+  assert.ok(Object.keys(body.client_payload).length <= 10);
+  assert.throws(
+    () => repositoryDispatchBody(backtest, 22, false, 100),
+    /retry lineage must be positive/,
   );
 });
 

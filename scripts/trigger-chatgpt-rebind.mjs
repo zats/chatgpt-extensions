@@ -167,11 +167,19 @@ export function requestFromEvent(eventName, event) {
     if (!plainObject(payload) || !Number.isSafeInteger(payload.issueNumber) || payload.issueNumber <= 0) {
       throw new TypeError("repository_dispatch requires a positive issueNumber");
     }
+    const expectedPayloadKeys = ["issueNumber", "request"];
+    if (Object.hasOwn(payload, "retry")) expectedPayloadKeys.push("retry");
+    if (Object.hasOwn(payload, "automaticRetrySourceRunId")) {
+      expectedPayloadKeys.push("automaticRetrySourceRunId");
+    }
+    if (!exactKeys(payload, expectedPayloadKeys)) {
+      throw new TypeError("repository_dispatch has unexpected or missing fields");
+    }
     const {
       issueNumber,
+      request: requestValue,
       retry = false,
       automaticRetrySourceRunId,
-      ...requestValue
     } = payload;
     if (typeof retry !== "boolean") {
       throw new TypeError("repository_dispatch retry must be boolean");
@@ -226,6 +234,40 @@ export function requestFromEvent(eventName, event) {
     });
   }
   throw new TypeError(`Unsupported GitHub event: ${eventName}`);
+}
+
+export function repositoryDispatchBody(
+  request,
+  issueNumber,
+  retry = false,
+  automaticRetrySourceRunId,
+) {
+  const validatedRequest = validateRequest(request);
+  if (!Number.isSafeInteger(issueNumber) || issueNumber <= 0) {
+    throw new TypeError("Repository dispatch issue number must be positive");
+  }
+  if (typeof retry !== "boolean") {
+    throw new TypeError("Repository dispatch retry must be boolean");
+  }
+  if (
+    automaticRetrySourceRunId !== undefined &&
+    (!retry ||
+      !Number.isSafeInteger(automaticRetrySourceRunId) ||
+      automaticRetrySourceRunId <= 0)
+  ) {
+    throw new TypeError("Repository dispatch retry lineage must be positive");
+  }
+  return Object.freeze({
+    event_type: "chatgpt-rebind",
+    client_payload: Object.freeze({
+      request: validatedRequest,
+      issueNumber,
+      ...(retry ? { retry: true } : {}),
+      ...(automaticRetrySourceRunId
+        ? { automaticRetrySourceRunId }
+        : {}),
+    }),
+  });
 }
 
 export function requestsFromSnapshot(snapshot, batchId, offsets = fixedBacktestOffsets) {
@@ -375,17 +417,9 @@ async function dispatch(
   retry = false,
   automaticRetrySourceRunId,
 ) {
-  const payload = JSON.stringify({
-    event_type: "chatgpt-rebind",
-    client_payload: {
-      ...request,
-      issueNumber,
-      ...(retry ? { retry: true } : {}),
-      ...(automaticRetrySourceRunId
-        ? { automaticRetrySourceRunId }
-        : {}),
-    },
-  });
+  const payload = JSON.stringify(
+    repositoryDispatchBody(request, issueNumber, retry, automaticRetrySourceRunId),
+  );
   runGh(
     ["api", "--method", "POST", `repos/${repository}/dispatches`, "--input", "-"],
     { input: payload },
