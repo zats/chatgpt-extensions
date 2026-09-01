@@ -43,11 +43,11 @@ Keep the stable API, runtime loader and launcher, product extensions, test fixtu
 
 1. Confirm the supplied app version, build, `app.asar` digest, Electron version, and URL before research.
 2. Start with the prior binding's semantic anchors. Search the current extracted tree for stable app evidence in this order: i18n identifiers, IPC and protocol strings, library behavior and ARIA semantics, test identifiers, then visible text.
-3. Verify current module and export identities by behavior and prop contracts. Never use a minified name or content-hashed chunk filename as the only evidence.
+3. Verify every current module and export identity independently by behavior and prop contracts. A reference binding or retry seed does not validate a minified alias in the target build. Never use a minified name or content-hashed chunk filename as the only evidence.
 4. Reuse the app's current components and ownership boundaries. Preserve built-in children, handlers, focus, keyboard, menu, and accessibility behavior.
 5. Keep multi-extension composition and callback isolation unchanged. Extensions must continue to use the app-shaped API that already exists.
 6. Rebuild every checked-in binding artifact. Put its relative path and exact lowercase SHA-256 in `manifest.json`.
-7. Add or update exact-build tests inside the target binding. Tests must fail if a locator, module, export, activation phase, rich-message contribution, UI-surface contribution, or product-extension composition path is absent.
+7. Add or update exact-build tests inside the target binding. Tests must fail if a locator, mapped initializer or export, activation phase, rich-message contribution, UI-surface contribution, or product-extension composition path is absent or maps to a different app behavior.
 
 ## Record evidence
 

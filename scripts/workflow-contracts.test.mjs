@@ -380,6 +380,41 @@ test("rerun consumers use producer artifact identities and authenticated attempt
   assert.match(reusable, /auth_source_run_attempt:/);
 });
 
+test("a binding retry receives its prior public live failure and re-derives minified aliases", async () => {
+  const rebind = await source("rebind-chatgpt.yml");
+  const retry = rebind.slice(
+    rebind.indexOf("name: Recover the exact trusted retry seed"),
+    rebind.indexOf("name: Generate an uncommitted exact binding"),
+  );
+  assert.match(
+    retry,
+    /patch_attempt="\$\{patch_artifact_name##\*-\}"/,
+  );
+  assert.match(
+    retry,
+    /\[\[ "\$patch_attempt" =~ \^\[1-9\]\[0-9\]\*\$ \]\]/,
+  );
+  assert.match(
+    retry,
+    /precommit-version-gate-\$VERSION-\$PREVIOUS_RUN_ID-\$patch_attempt/,
+  );
+  assert.match(retry, /select\(\.expired == false and \.name == \$name\)/);
+  assert.match(retry, /printf '%s\\n' version-gate\.json/);
+  assert.match(retry, /\.schemaVersion == 1/);
+  assert.match(retry, /\.phase == "live"/);
+  assert.match(retry, /scan-patch-credentials\.mjs/);
+  assert.match(retry, /\$diagnostics\/version-gate\.json/);
+  assert.match(retry, /live-result=\$live_status/);
+  assert.match(
+    rebind,
+    /Re-derive every minified module and export from target-build behavior/,
+  );
+  assert.match(rebind, /case "\$RETRY_LIVE_RESULT" in/);
+  assert.match(rebind, /The prior live gate failed/);
+  assert.match(rebind, /The prior live gate passed/);
+  assert.match(rebind, /No prior live-gate result is available/);
+});
+
 test("test authentication exists only after no-secret static tests and live runs as another UID", async () => {
   const rebind = await source("rebind-chatgpt.yml");
   const reusable = await source("test.yml");

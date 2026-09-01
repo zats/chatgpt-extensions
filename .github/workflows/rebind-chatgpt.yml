@@ -713,8 +713,11 @@ jobs:
           UNTRUSTED_HOME: ${{ steps.isolation.outputs.home }}
           UNTRUSTED_WORKTREE: ${{ steps.codex.outputs.worktree }}
         run: |
-          echo "source=fresh" >> "$GITHUB_OUTPUT"
-          echo "diagnostics=none" >> "$GITHUB_OUTPUT"
+          {
+            echo "source=fresh"
+            echo "diagnostics=none"
+            echo "live-result=absent"
+          } >> "$GITHUB_OUTPUT"
           [[ "$RETRY" == "true" ]] || exit 0
 
           retry_root="$RUNNER_TEMP/rebind-retry"
@@ -722,12 +725,19 @@ jobs:
           if [[ -n "$PREVIOUS_RUN_ID" ]]; then
             gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PREVIOUS_RUN_ID/artifacts?per_page=100" \
               > "$retry_root/artifacts.json"
-            artifact_id="$(jq -r \
+            patch_record="$(jq -c \
               --arg prefix "binding-patch-$VERSION-$PREVIOUS_RUN_ID-" \
-              '[.artifacts[] | select(.expired == false and (.name | startswith($prefix)))] | sort_by(.created_at) | last | .id // empty' \
+              '[.artifacts[] | select(.expired == false and (.name | startswith($prefix)))] | sort_by(.created_at) | last // {}' \
               "$retry_root/artifacts.json")"
-            if [[ -n "$artifact_id" ]]; then
-              gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" \
+            patch_artifact_id="$(jq -r '.id // empty' <<< "$patch_record")"
+            patch_artifact_name="$(jq -r '.name // empty' <<< "$patch_record")"
+            if [[ -n "$patch_artifact_id" ]]; then
+              patch_attempt="${patch_artifact_name##*-}"
+              [[ "$patch_attempt" =~ ^[1-9][0-9]*$ ]] || {
+                echo "Retry patch artifact has no exact run attempt" >&2
+                exit 1
+              }
+              gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$patch_artifact_id/zip" \
                 > "$retry_root/artifact.zip"
               unzip -Z1 "$retry_root/artifact.zip" > "$retry_root/entries.txt"
               LC_ALL=C sort "$retry_root/entries.txt" > "$retry_root/entries.sorted.txt"
@@ -763,6 +773,43 @@ jobs:
               sudo /usr/bin/install -m 600 \
                 "$retry_root/artifact/change-validation.json" \
                 "$diagnostics/change-validation.json"
+              gate_artifact_id="$(jq -r \
+                --arg name "precommit-version-gate-$VERSION-$PREVIOUS_RUN_ID-$patch_attempt" \
+                '[.artifacts[] | select(.expired == false and .name == $name)] | last | .id // empty' \
+                "$retry_root/artifacts.json")"
+              if [[ -n "$gate_artifact_id" ]]; then
+                gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$gate_artifact_id/zip" \
+                  > "$retry_root/live-gate.zip"
+                unzip -Z1 "$retry_root/live-gate.zip" \
+                  > "$retry_root/live-gate-entries.txt"
+                printf '%s\n' version-gate.json > "$retry_root/live-gate-expected.txt"
+                cmp -s \
+                  "$retry_root/live-gate-entries.txt" \
+                  "$retry_root/live-gate-expected.txt" || {
+                  echo "Retry live-gate artifact does not contain the exact trusted file set" >&2
+                  exit 1
+                }
+                mkdir "$retry_root/live-gate"
+                unzip -q "$retry_root/live-gate.zip" -d "$retry_root/live-gate"
+                live_gate="$retry_root/live-gate/version-gate.json"
+                [[ -f "$live_gate" && ! -L "$live_gate" ]] || {
+                  echo "Retry live-gate result is not a regular file" >&2
+                  exit 1
+                }
+                jq -e '
+                  .schemaVersion == 1 and
+                  .phase == "live" and
+                  (.status == "passed" or .status == "failed")
+                ' "$live_gate" >/dev/null
+                live_status="$(jq -er .status "$live_gate")"
+                node "$RUNNER_TEMP/trusted-automation/scan-patch-credentials.mjs" \
+                  --candidate "$live_gate" \
+                  --secret "$RUNNER_TEMP/initial-agent-auth.json"
+                sudo /usr/bin/install -m 600 \
+                  "$live_gate" \
+                  "$diagnostics/version-gate.json"
+                echo "live-result=$live_status" >> "$GITHUB_OUTPUT"
+              fi
               sudo /usr/sbin/chown -R "$AGENT_UID:20" "$diagnostics"
               echo "diagnostics=$diagnostics" >> "$GITHUB_OUTPUT"
             fi
@@ -855,6 +902,7 @@ jobs:
           ELECTRON_VERSION: ${{ steps.research.outputs.electron }}
           MODE: ${{ needs.request.outputs.mode }}
           RETRY_DIAGNOSTICS: ${{ steps.retry-seed.outputs.diagnostics }}
+          RETRY_LIVE_RESULT: ${{ steps.retry-seed.outputs.live-result }}
           RETRY_SEED_SOURCE: ${{ steps.retry-seed.outputs.source }}
           RESEARCH_DIRECTORY: ${{ steps.research.outputs.directory }}
           UNTRUSTED_HOME: ${{ steps.isolation.outputs.home }}
@@ -866,6 +914,21 @@ jobs:
           else
             reference_version="$(jq -er .current "$GITHUB_WORKSPACE/runtime/bindings/index.json")"
           fi
+          case "$RETRY_LIVE_RESULT" in
+            failed)
+              live_guidance="The prior live gate failed. Diagnose that failure before you repeat static work."
+              ;;
+            passed)
+              live_guidance="The prior live gate passed. Preserve it as completed evidence and investigate only the later failure."
+              ;;
+            absent)
+              live_guidance="No prior live-gate result is available. Do not infer that a live gate passed or failed."
+              ;;
+            *)
+              echo "Retry live-gate result is invalid" >&2
+              exit 1
+              ;;
+          esac
           prompt="$RUNNER_TEMP/rebind-prompt.md"
           cat > "$prompt" <<PROMPT
           Use \$rebind-chatgpt-version to ${MODE} ChatGPT ${VERSION}.
@@ -885,7 +948,7 @@ jobs:
 
           Use only the supplied app and research tree. Do not download another app. Keep the public API, product extensions, runtime launcher, workflows, scripts, and every non-target binding unchanged. You may change only runtime/bindings/${VERSION}/**, runtime/bindings/index.json, APIs/builds/${VERSION}.d.ts, and APIs/builds/${VERSION}.md. Write binding manifest and index schema 2 with the exact app build, archive length, and archive signature above. In correction mode, replace only the existing target binding and its exact build documentation, preserve the current index selection unless the target is already current, and increment adapterVersion patch by exactly one. Otherwise create adapterVersion 1.0.0. Current mode must select the new binding in the index. Backtest mode must preserve the current index selection. Every manifest artifact must name an existing committed binding artifact and its exact SHA-256. Add DERIVATION.md and exact-build tests. Do not commit, stage, push, open a pull request, or weaken a test.
 
-          If a trusted retry seed or diagnostics path is present, inspect it first. Continue from that exact validated patch. Do not rebase it, discard it without evidence, or repeat a completed investigation.
+          If a trusted retry seed or diagnostics path is present, inspect every file there first. Continue from that exact validated patch. ${live_guidance} Re-derive every minified module and export from target-build behavior; a reference binding or retry seed does not validate a minified alias. Do not rebase the seed, discard it without evidence, or repeat a completed investigation.
 
           Run all static and exact-binding tests that do not require authentication. Leave the completed binding uncommitted in the worktree. A separate test-auth-only runner owns the direct stock ChatGPT, API, UI, Reactions, Thread Colors, and Extensions composition live gates.
           PROMPT
