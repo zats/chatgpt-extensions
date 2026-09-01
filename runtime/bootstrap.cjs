@@ -1009,6 +1009,26 @@ function startRendererLifecycle(options) {
   return activation;
 }
 
+function createPrimaryRendererRegistry() {
+  const ids = new Set();
+
+  return Object.freeze({
+    add(contents) {
+      const id = contents?.id;
+      if (!Number.isInteger(id)) {
+        throw new TypeError(
+          "Primary renderer webContents must have an integer ID",
+        );
+      }
+      ids.add(id);
+      contents.once?.("destroyed", () => ids.delete(id));
+    },
+    has(contents) {
+      return Number.isInteger(contents?.id) && ids.has(contents.id);
+    },
+  });
+}
+
 function richContentInteractionScript(specification, specifications) {
   return `(async () => {
     const specification = ${JSON.stringify(specification)};
@@ -1375,7 +1395,7 @@ function initialize() {
   let electronNamespace;
   let mainHost;
   let rendererLifecycle;
-  const primaryRendererContents = new WeakSet();
+  const primaryRendererContents = createPrimaryRendererRegistry();
 
   function stopRichContentProbePoller(documentId) {
     const stop = richContentProbePollers.get(documentId);
@@ -2804,6 +2824,16 @@ ${code}
           primary,
           webContentsId: contents.id,
         });
+        log(
+          primary
+            ? appPage
+              ? "primary-app-document-observed"
+              : "primary-non-app-document-observed"
+            : appPage
+              ? "auxiliary-app-document-observed"
+              : "auxiliary-non-app-document-observed",
+          { webContentsId: contents.id },
+        );
         return appPage && primary;
       },
       inject: (contents, document) =>
@@ -3155,6 +3185,7 @@ ${code}
 
 module.exports = Object.freeze({
   createPrimaryDocumentClaim,
+  createPrimaryRendererRegistry,
   createRendererLifecycle,
   executeRendererJavaScript,
   isCurrentRendererDocument,

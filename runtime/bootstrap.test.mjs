@@ -7,6 +7,7 @@ import bootstrap from "./bootstrap.cjs";
 
 const {
   createPrimaryDocumentClaim,
+  createPrimaryRendererRegistry,
   createRendererLifecycle,
   executeRendererJavaScript,
   isCurrentRendererDocument,
@@ -37,6 +38,24 @@ const {
   waitForPrimaryUiReadiness,
   writeCurrentRendererDocumentDiagnostics,
 } = bootstrap;
+
+test("primary renderer ownership follows the native webContents ID", () => {
+  const registered = new EventEmitter();
+  registered.id = 41;
+  const registry = createPrimaryRendererRegistry();
+
+  registry.add(registered);
+
+  assert.equal(registry.has(registered), true);
+  assert.equal(registry.has({ id: 41 }), true);
+  assert.equal(registry.has({ id: 42 }), false);
+  registered.emit("destroyed");
+  assert.equal(registry.has({ id: 41 }), false);
+  assert.throws(
+    () => registry.add({ id: "41" }),
+    /must have an integer ID/,
+  );
+});
 
 test("renderer JavaScript execution returns a settled result within its bound", async () => {
   const calls = [];

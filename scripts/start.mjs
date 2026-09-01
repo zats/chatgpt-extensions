@@ -123,6 +123,8 @@ const safeGateFailureCodes = new Set([
   "ui-surface-thread-composer",
 ]);
 const safeGateRuntimeEventNames = Object.freeze([
+  "auxiliary-app-document-observed",
+  "auxiliary-non-app-document-observed",
   "auxiliary-window-created",
   "electron-intercepted",
   "exact-build-verified",
@@ -135,6 +137,8 @@ const safeGateRuntimeEventNames = Object.freeze([
   "product-extension-real-ui-probe-passed",
   "product-extension-real-ui-probe-skipped",
   "primary-ui-readiness",
+  "primary-app-document-observed",
+  "primary-non-app-document-observed",
   "primary-window-created",
   "renderer-bootstrap-error",
   "renderer-channel-connect-failed",

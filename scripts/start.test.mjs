@@ -91,6 +91,8 @@ test("public gate evidence uses strict allowlists", () => {
   );
   assert.deepEqual(
     summarizeGateRuntimeEvents([
+      { event: "primary-app-document-observed", url: privateValue },
+      { event: "auxiliary-non-app-document-observed", url: privateValue },
       { event: "renderer-injected", title: privateValue },
       { event: "renderer-injected", title: privateValue },
       {
@@ -102,6 +104,8 @@ test("public gate evidence uses strict allowlists", () => {
       { event: privateValue },
     ]),
     {
+      "auxiliary-non-app-document-observed": 1,
+      "primary-app-document-observed": 1,
       "renderer-document-inactive": 1,
       "renderer-injected": 2,
       "rich-content-probe-skipped": 1,
