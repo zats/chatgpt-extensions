@@ -410,6 +410,9 @@ test("public version-gate output strips launcher evidence and private error name
         message: privateValue,
       },
       runtimeEventCounts: {
+        "auxiliary-window-created": 1,
+        "primary-window-created": 1,
+        "renderer-document-observed": 2,
         "renderer-document-inactive": 1,
         "rich-content-probe-skipped": 2,
         "renderer-injected": -1,
@@ -454,6 +457,9 @@ test("public version-gate output strips launcher evidence and private error name
     ],
     failure: { code: "launcher-gate-failed", errorName: "Error" },
     runtimeEventCounts: {
+      "auxiliary-window-created": 1,
+      "primary-window-created": 1,
+      "renderer-document-observed": 2,
       "renderer-document-inactive": 1,
       "rich-content-probe-skipped": 2,
     },

@@ -71,6 +71,7 @@ const safeLauncherFailureCodes = new Set([
   "ui-surface-thread-composer",
 ]);
 const safeRuntimeEventNames = Object.freeze([
+  "auxiliary-window-created",
   "electron-intercepted",
   "exact-build-verified",
   "main-extension-host-failed",
@@ -82,11 +83,13 @@ const safeRuntimeEventNames = Object.freeze([
   "product-extension-real-ui-probe-passed",
   "product-extension-real-ui-probe-skipped",
   "primary-ui-readiness",
+  "primary-window-created",
   "renderer-bootstrap-error",
   "renderer-channel-connect-failed",
   "renderer-channel-disconnect-failed",
   "renderer-channel-inject-failed",
   "renderer-document-inactive",
+  "renderer-document-observed",
   "renderer-entry-registered",
   "renderer-entry-registration-failed",
   "renderer-host-injection-failed",

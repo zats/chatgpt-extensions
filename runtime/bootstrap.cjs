@@ -2796,8 +2796,16 @@ ${code}
         const owner = BrowserWindow.fromWebContents(contents);
         return owner ? `window:${owner.id}` : `window:contents-${contents.id}`;
       },
-      isEligible: (url, contents) =>
-        url.startsWith("app:") && primaryRendererContents.has(contents),
+      isEligible: (url, contents) => {
+        const appPage = url.startsWith("app:");
+        const primary = primaryRendererContents.has(contents);
+        log("renderer-document-observed", {
+          appPage,
+          primary,
+          webContentsId: contents.id,
+        });
+        return appPage && primary;
+      },
       inject: (contents, document) =>
         injectIntoContents(contents, entries, document),
       connect(document) {
@@ -3118,7 +3126,7 @@ ${code}
         }
         super(options);
         if (primary) primaryRendererContents.add(this.webContents);
-        log("window-created", { primary });
+        log(primary ? "primary-window-created" : "auxiliary-window-created");
       }
     };
     Object.setPrototypeOf(PatchedBrowserWindow, OriginalBrowserWindow);
