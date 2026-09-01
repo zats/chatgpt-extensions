@@ -9,6 +9,14 @@
       "downloadUrl": "https://persistent.oaistatic.com/codex-app-prod/ChatGPT-darwin-arm64-26.825.51511.zip",
       "downloadLength": 595263123,
       "downloadEdSignature": "9ig6An9v69dIpSgoSRGs6PoTr4sP4Dug9HcyWm4vMEB7W4owrEQT5cN+csTux1MdN70stJXuq1U6KRxzqBw9CQ=="
+    },
+    "26.825.32147": {
+      "version": "26.825.32147",
+      "appBuild": "7303",
+      "appAsarSha256": "0462b03e878f0e78b223b849ee14cbba0de043f2c16acebee163cb95daa622ef",
+      "downloadUrl": "https://persistent.oaistatic.com/codex-app-prod/ChatGPT-darwin-arm64-26.825.32147.zip",
+      "downloadLength": 594222100,
+      "downloadEdSignature": "Y4YH/H+IsSwOd6HdN8Zdct2d6SV3/lSAVNNz/PcusUmYAvYIcuej05jhvVqsEZ95VeyGqgSZ1lqwJXTYJ19cDw=="
     }
   }
 }
