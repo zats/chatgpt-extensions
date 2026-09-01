@@ -146,6 +146,7 @@ const safeRichProbeGroupKeys = Object.freeze({
 });
 const maximumDiagnosticJsonBytes = 10 * 1024 * 1024;
 const maximumMetadataJsonBytes = 1024 * 1024;
+const liveLauncherTimeoutMilliseconds = 600_000;
 
 async function readBoundedJsonFile(file, maximumBytes) {
   const status = await lstat(file);
@@ -627,6 +628,8 @@ async function runLiveGate(options) {
       ...inputs.extensions.flatMap((directory) => ["--extension", directory]),
       "--result",
       launcherResultFile,
+      "--timeout-ms",
+      String(liveLauncherTimeoutMilliseconds),
     ];
     try {
       await runOwnedCommand(start.executable, arguments_, {

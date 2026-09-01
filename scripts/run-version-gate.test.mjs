@@ -436,6 +436,9 @@ test("the process-level public artifact strips private child fields on success a
         `import fs from "node:fs";
 const arguments_ = process.argv.slice(2);
 const resultFile = arguments_[arguments_.indexOf("--result") + 1];
+if (arguments_[arguments_.indexOf("--timeout-ms") + 1] !== "600000") {
+  throw new Error("The live launcher timeout was not explicit");
+}
 const privateValue = ${JSON.stringify(privateValue)};
 const exact = {
   name: "exact-binding",
