@@ -72,6 +72,7 @@ const exactUiBridgeSource = String.raw`  const exactUiTransformers = Object.free
   let exactCloudConversationItemOwner = null;
   let exactCloudConversationItemOwnerDrift = false;
   let exactRichProbeRequested = false;
+  let exactRichProbeCommitted = false;
   let exactRichProbeContainer = null;
   let mountExactRichContentProbe = null;
   let unmountExactRichContentProbe = null;
@@ -79,7 +80,9 @@ const exactUiBridgeSource = String.raw`  const exactUiTransformers = Object.free
   let runExactProductExtensionRealUiProbe = null;
 
   function primaryAppShellReady() {
-    const root = document.querySelector('main[data-app-shell-main-surface]');
+    const root = document.querySelector(
+      'main[data-app-shell-main-surface="default"]',
+    );
     if (!(root instanceof HTMLElement) || !root.isConnected) return false;
     const mainFocusArea = root.querySelector(
       '[data-app-shell-focus-area="main"]',
@@ -228,27 +231,61 @@ const exactUiBridgeSource = String.raw`  const exactUiTransformers = Object.free
     if (typeof counters?.[outcome] === "number") counters[outcome] += 1;
   }
 
-  function exactRichFallbackStatus(surface, outcome) {
-    const counters = exactRichFallbacks[surface];
+  function exactRichFallbackSnapshot() {
+    const root =
+      exactRichProbeCommitted && exactRichProbeContainer?.isConnected === true
+        ? exactRichProbeContainer
+        : null;
+    const rawText = root?.textContent;
+    const probeText = typeof rawText === "string" ? rawText : "";
     const labels = {
       assistantContentReference:
-        "Rich probe content reference " + outcome + " first-party fallback",
+        "Rich probe content reference ",
       assistantCodeBlock:
-        "Rich probe code block " + outcome + " first-party fallback",
+        "Rich probe code block ",
       conversationItemLocal:
-        "Rich probe local conversation item " + outcome + " first-party fallback",
+        "Rich probe local conversation item ",
       conversationItemCloud:
-        "Rich probe cloud conversation item " + outcome + " first-party fallback",
+        "Rich probe cloud conversation item ",
     };
-    const connected =
-      surface === "assistantDirective"
-        ? document.querySelector(
-            '[data-cgptx-rich-first-party-directive="' + outcome + '"]',
-          )?.isConnected === true
-        : document.body?.innerText?.includes(labels[surface]) === true;
+    const status = (surface, outcome) =>
+      Object.freeze({
+        attempts: exactRichFallbacks[surface]?.[outcome] ?? 0,
+        connected:
+          surface === "assistantDirective"
+            ? root?.querySelector(
+                '[data-cgptx-rich-first-party-directive="' + outcome + '"]',
+              )?.isConnected === true
+            : root !== null &&
+              probeText.includes(
+                labels[surface] + outcome + " first-party fallback",
+              ),
+      });
     return Object.freeze({
-      attempts: counters?.[outcome] ?? 0,
-      connected,
+      assistantDirective: Object.freeze({
+        unregistered: status("assistantDirective", "unregistered"),
+        rendererError: status("assistantDirective", "rendererError"),
+      }),
+      assistantContentReference: Object.freeze({
+        nonMatch: status("assistantContentReference", "nonMatch"),
+        matcherError: status("assistantContentReference", "matcherError"),
+        rendererError: status("assistantContentReference", "rendererError"),
+      }),
+      assistantCodeBlock: Object.freeze({
+        nonMatch: status("assistantCodeBlock", "nonMatch"),
+        matcherError: status("assistantCodeBlock", "matcherError"),
+        rendererError: status("assistantCodeBlock", "rendererError"),
+      }),
+      conversationItemLocal: Object.freeze({
+        nonMatch: status("conversationItemLocal", "nonMatch"),
+        matcherError: status("conversationItemLocal", "matcherError"),
+        rendererError: status("conversationItemLocal", "rendererError"),
+      }),
+      conversationItemCloud: Object.freeze({
+        nonMatch: status("conversationItemCloud", "nonMatch"),
+        matcherError: status("conversationItemCloud", "matcherError"),
+        rendererError: status("conversationItemCloud", "rendererError"),
+      }),
     });
   }
 
@@ -1829,10 +1866,28 @@ const exactUiHookSource = String.raw`    const exactAssistantMarkdownContext =
     }
 
     function ExactRichContentProbePortal() {
-      if (!exactRichProbeRequested || !exactRichProbeContainer) return null;
+      const container = exactRichProbeRequested
+        ? exactRichProbeContainer
+        : null;
+      React.useLayoutEffect(() => {
+        if (container === null) {
+          exactRichProbeCommitted = false;
+          return undefined;
+        }
+        exactRichProbeCommitted = true;
+        return () => {
+          if (
+            exactRichProbeContainer === container ||
+            !exactRichProbeRequested
+          ) {
+            exactRichProbeCommitted = false;
+          }
+        };
+      }, [container]);
+      if (container === null) return null;
       return native.ReactDOMPortal.createPortal(
         originalJsx(ExactRichContentProbe, {}),
-        exactRichProbeContainer,
+        container,
       );
     }
 
@@ -2829,6 +2884,12 @@ const exactUiHookSource = String.raw`    const exactAssistantMarkdownContext =
           }) ?? null,
         "the native Settings search field",
       );
+      const settingsRoot = searchInput.closest(
+        'main[data-app-shell-main-surface="default"]',
+      );
+      if (!(settingsRoot instanceof HTMLElement)) {
+        throw new Error("The native Settings AppShell owner is unavailable");
+      }
       const searchQuery = "Thread Colors";
       const valueSetter = Object.getOwnPropertyDescriptor(
         HTMLInputElement.prototype,
@@ -2859,38 +2920,48 @@ const exactUiHookSource = String.raw`    const exactAssistantMarkdownContext =
       }
       const searchResult = await waitUntil(
         () => {
-          const leaf = Array.from(document.querySelectorAll("*")).find(
-            (element) =>
-              isVisible(element) &&
-              element.textContent?.trim() === searchQuery &&
-              !Array.from(element.children).some(
-                (child) => child.textContent?.trim() === searchQuery,
+          return (
+            Array.from(
+              settingsRoot.querySelectorAll(
+                'button, a, [role="button"], [role="option"], [role="menuitem"]',
               ),
+            ).find(
+              (control) =>
+                isVisible(control) &&
+                control.textContent?.includes(searchQuery) === true,
+            ) ?? null
           );
-          const control = leaf?.closest(
-            'button, a, [role="button"], [role="option"], [role="menuitem"]',
-          );
-          return isVisible(control) && control;
         },
         "the Thread Colors native Settings search result",
       );
       activateNativeButton(searchResult);
-      await waitUntil(
-        () =>
-          currentSettingsPaneId() === "extensions.installed" &&
-          document.body?.innerText?.includes("Thread Colors") === true,
+      const threadColorsTarget = await waitUntil(
+        () => {
+          if (currentSettingsPaneId() !== "extensions.installed") return null;
+          const target = settingsRoot.querySelector(
+            '[data-settings-target-id="extension.thread-colors"]',
+          );
+          return isVisible(target) && target;
+        },
         "the Extensions settings pane selected from search",
       );
       await wait();
       const visibleRefreshControl = Array.from(
-        document.querySelectorAll('button, [role="button"]'),
+        settingsRoot.querySelectorAll('button, [role="button"]'),
       ).find(
         (element) =>
           isVisible(element) && element.textContent?.trim() === "Refresh",
       );
+      const visibleSettingsButtons = Array.from(
+        settingsRoot.querySelectorAll('button, [role="button"]'),
+      ).filter(isVisible);
+      const settingsButtonWithLabel = (label) =>
+        visibleSettingsButtons.some(
+          (element) => element.textContent?.trim() === label,
+        );
       const globalErrorVisible =
-        document.body?.innerText?.includes("Oops, an error has occurred") ===
-        true;
+        settingsButtonWithLabel("Update ChatGPT") &&
+        settingsButtonWithLabel("Try again");
 
       return Object.freeze({
         realDom: true,
@@ -2940,7 +3011,9 @@ const exactUiHookSource = String.raw`    const exactAssistantMarkdownContext =
           searchResultClicked: true,
           selectedPane: currentSettingsPaneId(),
           threadColorsVisible:
-            document.body?.innerText?.includes("Thread Colors") === true,
+            threadColorsTarget instanceof HTMLElement &&
+            threadColorsTarget.isConnected &&
+            isVisible(threadColorsTarget),
           refreshControlAbsent: visibleRefreshControl === undefined,
           globalErrorAbsent: !globalErrorVisible,
         }),
@@ -3006,19 +3079,22 @@ const exactUiHookSource = String.raw`    const exactAssistantMarkdownContext =
           entries: exactAnnouncementItems(props.entries),
         }, elementKey);
       }
+      if (owner === "app-shell-main") {
+        return originalJsxs(React.Fragment, {
+          children: [
+            originalJsx(type, props, elementKey),
+            originalJsx(ExactRichContentProbePortal, {}),
+          ],
+        });
+      }
       if (owner === "sidebar") {
-        const sidebar = originalJsx(type, {
+        return originalJsx(type, {
           ...props,
           availableDestinations: exactSidebarDestinationItems(
             props.availableDestinations,
             props,
           ),
         }, elementKey);
-        return exactRichProbeRequested
-          ? originalJsxs(React.Fragment, {
-              children: [sidebar, originalJsx(ExactRichContentProbePortal, {})],
-            })
-          : sidebar;
       }
       const context = exactComposerContext(props);
       if (owner === "composer-footer") {
@@ -3414,6 +3490,37 @@ const patches = Object.freeze([
       '      candidate.startsWith("__reactFiber$"),',
       "    );",
       "    return key ? node[key] : null;",
+      "  }",
+    ),
+  }),
+  Object.freeze({
+    name: "exact AppShell React root discovery",
+    before: lines(
+      "  function applicationReactRoot() {",
+      "    if (!document.body) return null;",
+      '    for (const node of document.body.querySelectorAll("*")) {',
+      "      let fiber = fiberOf(node);",
+      "      if (!fiber) continue;",
+      "      while (fiber.return) fiber = fiber.return;",
+      "      if (fiber.tag === 3 && fiber.stateNode?.current) {",
+      "        return fiber.stateNode;",
+      "      }",
+      "    }",
+      "    return null;",
+      "  }",
+    ),
+    after: lines(
+      "  function applicationReactRoot() {",
+      "    const node = document.querySelector(",
+      '      \'main[data-app-shell-main-surface="default"]\',',
+      "    );",
+      "    if (!(node instanceof HTMLElement) || !node.isConnected) return null;",
+      "    let fiber = fiberOf(node);",
+      "    if (!fiber) return null;",
+      "    while (fiber.return) fiber = fiber.return;",
+      "    return fiber.tag === 3 && fiber.stateNode?.current",
+      "      ? fiber.stateNode",
+      "      : null;",
       "  }",
     ),
   }),
@@ -5077,6 +5184,14 @@ const patches = Object.freeze([
     ),
     after: lines(
       "        if (",
+      '          type === "main" &&',
+      '          props?.["data-app-shell-main-surface"] === "default"',
+      "        ) {",
+      "          return originalJsx(ExactUiOwnerBoundary, {",
+      '            owner: "app-shell-main", type, props, elementKey: key,',
+      "          }, key);",
+      "        }",
+      "        if (",
       "          isExactContentReferenceDirective(type, props)",
       "        ) {",
       "          return originalJsx(ExactContentReferenceDirective, {",
@@ -5320,32 +5435,7 @@ const patches = Object.freeze([
       "        mounts: Object.freeze({ ...exactRichLifecycle.mounts }),",
       "        disposals: Object.freeze({ ...exactRichLifecycle.disposals }),",
       "      }),",
-      "      richContentFallbacks: () => Object.freeze({",
-      "        assistantDirective: Object.freeze({",
-      "          unregistered: exactRichFallbackStatus('assistantDirective', 'unregistered'),",
-      "          rendererError: exactRichFallbackStatus('assistantDirective', 'rendererError'),",
-      "        }),",
-      "        assistantContentReference: Object.freeze({",
-      "          nonMatch: exactRichFallbackStatus('assistantContentReference', 'nonMatch'),",
-      "          matcherError: exactRichFallbackStatus('assistantContentReference', 'matcherError'),",
-      "          rendererError: exactRichFallbackStatus('assistantContentReference', 'rendererError'),",
-      "        }),",
-      "        assistantCodeBlock: Object.freeze({",
-      "          nonMatch: exactRichFallbackStatus('assistantCodeBlock', 'nonMatch'),",
-      "          matcherError: exactRichFallbackStatus('assistantCodeBlock', 'matcherError'),",
-      "          rendererError: exactRichFallbackStatus('assistantCodeBlock', 'rendererError'),",
-      "        }),",
-      "        conversationItemLocal: Object.freeze({",
-      "          nonMatch: exactRichFallbackStatus('conversationItemLocal', 'nonMatch'),",
-      "          matcherError: exactRichFallbackStatus('conversationItemLocal', 'matcherError'),",
-      "          rendererError: exactRichFallbackStatus('conversationItemLocal', 'rendererError'),",
-      "        }),",
-      "        conversationItemCloud: Object.freeze({",
-      "          nonMatch: exactRichFallbackStatus('conversationItemCloud', 'nonMatch'),",
-      "          matcherError: exactRichFallbackStatus('conversationItemCloud', 'matcherError'),",
-      "          rendererError: exactRichFallbackStatus('conversationItemCloud', 'rendererError'),",
-      "        }),",
-      "      }),",
+      "      richContentFallbacks: exactRichFallbackSnapshot,",
       "      richContentRegistrationCounts: () => Object.freeze({",
       "        assistantDirective:",
       "          exactRichContentRegistrations.assistantDirective.length,",

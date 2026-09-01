@@ -67,7 +67,7 @@ occurs exactly once in the supplied tree.
 | Manifest artifact | SHA-256 |
 | --- | --- |
 | `host.js` | `2cb3022811c8d0bd45b51af0acf6d4e43203edd6492d43be13a6c4a02b192123` |
-| `host-source-patch.cjs` | `8541843fbd2c25afc9d369ba49a04e1960dcca2bdb679a7c445e6a631c13ca51` |
+| `host-source-patch.cjs` | `11d911c90b035719a88c25fcf2dfbc914927fa22ff33f1b219d79eff7652b2ca` |
 | `renderer-entry.ts` | `fd51e9d461ccdc88ab4f0788f1bec3c5eda2a3e1c2fc9b752487117b70ff63b1` |
 | `renderer-adapter.ts` | `819351a1e5a54c9f11c91858c4afe35c936d0292af798c03af1b83780f05adfc` |
 | `renderer-host.js` | `19e949d47597dc663bf76c136fd1c3d08fb0e889c4a699ec0e4850dcdb65679c` |
@@ -81,17 +81,22 @@ occurs exactly once in the supplied tree.
 - `rich-content-binding-verifier.test.mjs` rejects missing, changed, duplicate,
   or hash-mismatched rich-content anchors.
 - `host-source-patch.test.mjs` rejects wrong version/build/digest, missing or
-  duplicate patch anchors, reapplication, and absent UI or product-extension
-  composition paths.
+  duplicate patch anchors, reapplication, absent UI or product-extension
+  composition paths, whole-document diagnostic reads, a non-default AppShell
+  probe owner, and an unbounded React-root search.
 - `renderer-adapter.test.ts` covers activation lifetime, exact UI and rich
   contribution mapping, product-extension composition, cancellation,
   discovery, settings, and callback isolation.
 - `thread-colors.integration.test.ts` pins renderer callback identity used by
   the checked-in product extension.
 
-The direct stock-app live gate passed locally against this exact signed app,
-binding, and isolated authenticated profile. It verified native main calls,
-all rich-message lifecycle and interaction paths, all UI surfaces, the real
-Reactions and Thread Colors extensions in standard, activity, and cloud row
-layouts, cleanup, and the absence of runtime failure events. The separate
-test-auth-only CI runner must repeat this evidence before publication.
+Adapter `1.0.2` keeps the public API and the exact host artifact unchanged. It
+makes renderer diagnostics bounded: the rich-content portal is owned by the
+exact default AppShell main surface, fallback state reads only its committed
+probe root once per snapshot, Settings queries stay inside the Settings
+AppShell owner, and React-root discovery walks one exact owner's fiber chain.
+This removes the synchronous whole-document scans that could keep renderer
+JavaScript active after the outer stage timeout.
+
+The corrected direct stock-app live gate must pass in the separate
+test-auth-only CI runner before publication.

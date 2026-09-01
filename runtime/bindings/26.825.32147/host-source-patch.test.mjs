@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import patchModule from "./host-source-patch.cjs";
@@ -11,6 +12,19 @@ const fiberOfSource = `  function fiberOf(node) {
       candidate.startsWith("__reactFiber$"),
     );
     return key ? node[key] : null;
+  }`;
+
+const applicationReactRootSource = `  function applicationReactRoot() {
+    if (!document.body) return null;
+    for (const node of document.body.querySelectorAll("*")) {
+      let fiber = fiberOf(node);
+      if (!fiber) continue;
+      while (fiber.return) fiber = fiber.return;
+      if (fiber.tag === 3 && fiber.stateNode?.current) {
+        return fiber.stateNode;
+      }
+    }
+    return null;
   }`;
 
 const sameThreadContextSource = `  function sameThreadContext(left, right) {
@@ -320,6 +334,7 @@ ${structuralAnchorFiller}
   */
 ${sameThreadContextSource}
 ${fiberOfSource}
+${applicationReactRootSource}
   function emitCurrentThreadChange() {}
   function setCurrentThread(context) {
     currentThreadClearGeneration += 1;
@@ -586,6 +601,7 @@ ${nativeExportsSource}
     computeEffectiveThreadItemsAsync,
     computeThreadListItems,
     fiberOf,
+    applicationReactRoot,
     updateGenericThreadModel,
     updateThreadModel,
     addThreadTransformer: (extId, transform) =>
@@ -623,6 +639,14 @@ function patch(source = fixtureSource()) {
     originalDigest: sha256(source),
     source,
   });
+}
+
+function sourceBetween(source, startMarker, endMarker) {
+  const start = source.indexOf(startMarker);
+  const end = source.indexOf(endMarker, start + startMarker.length);
+  assert.ok(start >= 0, `missing source marker: ${startMarker}`);
+  assert.ok(end > start, `missing source boundary: ${endMarker}`);
+  return source.slice(start, end);
 }
 
 test("settings search initializes and guards the native icon map", () => {
@@ -793,7 +817,7 @@ test("exact first-party UI owners expose extension transforms and controls", () 
   );
 });
 
-test("primary AppShell readiness accepts each first-party main surface", () => {
+test("primary AppShell readiness accepts only the exact default main surface", () => {
   const result = patch();
   const start = result.source.indexOf("  function primaryAppShellReady() {");
   const end = result.source.indexOf("\n\n  function subscribeExactUi", start);
@@ -827,7 +851,7 @@ test("primary AppShell readiness accepts each first-party main surface", () => {
     }
   }
 
-  const rootSelector = "main[data-app-shell-main-surface]";
+  const rootSelector = 'main[data-app-shell-main-surface="default"]';
   const documentFor = (root, queried = []) => ({
     querySelector(selector) {
       queried.push(selector);
@@ -863,6 +887,247 @@ test("primary AppShell readiness accepts each first-party main surface", () => {
     result.source,
     /captureDynamicThreadItemsFromOpenMenus,\n\s+primaryAppShellReady,\n\s+richContentOwnerHits:/,
   );
+});
+
+test("rich fallback diagnostics read only the committed probe root once", () => {
+  const result = patch();
+  const functionSource = sourceBetween(
+    result.source,
+    "  function exactRichFallbackSnapshot() {",
+    "\n\n  function exactRichEntry",
+  );
+  const fallbacks = {
+    assistantDirective: { rendererError: 1 },
+    assistantContentReference: {
+      nonMatch: 2,
+      matcherError: 3,
+      rendererError: 4,
+    },
+    assistantCodeBlock: {
+      nonMatch: 5,
+      matcherError: 6,
+      rendererError: 7,
+    },
+    conversationItemLocal: {
+      nonMatch: 8,
+      matcherError: 9,
+      rendererError: 10,
+    },
+    conversationItemCloud: {
+      nonMatch: 11,
+      matcherError: 12,
+      rendererError: 13,
+    },
+  };
+  let textReads = 0;
+  const root = {
+    isConnected: true,
+    get textContent() {
+      textReads += 1;
+      return [
+        "Rich probe content reference nonMatch first-party fallback",
+        "Rich probe content reference matcherError first-party fallback",
+        "Rich probe content reference rendererError first-party fallback",
+        "Rich probe code block nonMatch first-party fallback",
+        "Rich probe code block matcherError first-party fallback",
+        "Rich probe code block rendererError first-party fallback",
+        "Rich probe local conversation item nonMatch first-party fallback",
+        "Rich probe local conversation item matcherError first-party fallback",
+        "Rich probe local conversation item rendererError first-party fallback",
+        "Rich probe cloud conversation item nonMatch first-party fallback",
+        "Rich probe cloud conversation item matcherError first-party fallback",
+        "Rich probe cloud conversation item rendererError first-party fallback",
+      ].join(" ");
+    },
+    querySelector(selector) {
+      return selector.includes("data-cgptx-rich-first-party-directive")
+        ? { isConnected: true }
+        : null;
+    },
+  };
+  const snapshot = new Function(
+    "exactRichProbeContainer",
+    "exactRichProbeCommitted",
+    "exactRichFallbacks",
+    `${functionSource}\nreturn exactRichFallbackSnapshot();`,
+  )(root, true, fallbacks);
+
+  assert.equal(textReads, 1);
+  assert.equal(snapshot.assistantDirective.unregistered.connected, true);
+  assert.equal(snapshot.assistantDirective.unregistered.attempts, 0);
+  assert.equal(snapshot.assistantContentReference.nonMatch.attempts, 2);
+  assert.equal(snapshot.assistantContentReference.nonMatch.connected, true);
+  assert.equal(snapshot.assistantCodeBlock.rendererError.connected, true);
+  assert.equal(snapshot.conversationItemLocal.matcherError.connected, true);
+  assert.equal(snapshot.conversationItemCloud.rendererError.connected, true);
+
+  const inactive = new Function(
+    "exactRichProbeContainer",
+    "exactRichProbeCommitted",
+    "exactRichFallbacks",
+    `${functionSource}\nreturn exactRichFallbackSnapshot();`,
+  )(root, false, fallbacks);
+  assert.equal(textReads, 1);
+  assert.equal(inactive.assistantDirective.unregistered.connected, false);
+  assert.equal(inactive.assistantCodeBlock.nonMatch.connected, false);
+  assert.doesNotMatch(functionSource, /document|innerText/);
+});
+
+test("the rich probe portal is owned by the exact AppShell main boundary", () => {
+  const result = patch();
+  const boundarySource = sourceBetween(
+    result.source,
+    "    function ExactUiOwnerBoundary",
+    "\n\n    function ExactProductModeBoundary",
+  );
+  const sidebarSource = sourceBetween(
+    boundarySource,
+    '      if (owner === "sidebar") {',
+    "\n      const context = exactComposerContext",
+  );
+  assert.match(
+    boundarySource,
+    /owner === "app-shell-main"[\s\S]*ExactRichContentProbePortal/,
+  );
+  assert.doesNotMatch(sidebarSource, /ExactRichContentProbePortal/);
+  assert.match(
+    result.source,
+    /type === "main" &&[\s\S]*data-app-shell-main-surface[\s\S]*=== "default"[\s\S]*owner: "app-shell-main"/,
+  );
+
+  const portalSource = sourceBetween(
+    result.source,
+    "    function ExactRichContentProbePortal() {",
+    "\n\n    mountExactRichContentProbe =",
+  );
+  let cleanup;
+  const React = {
+    useLayoutEffect(effect) {
+      cleanup?.();
+      cleanup = effect();
+    },
+  };
+  const native = {
+    ReactDOMPortal: {
+      createPortal(child, container) {
+        return { child, container };
+      },
+    },
+  };
+  const probe = new Function(
+    "React",
+    "native",
+    "originalJsx",
+    `let exactRichProbeRequested = false;
+let exactRichProbeCommitted = false;
+let exactRichProbeContainer = null;
+const ExactRichContentProbe = Symbol("probe");
+${portalSource}
+return {
+  render: () => ExactRichContentProbePortal(),
+  request(container) {
+    exactRichProbeContainer = container;
+    exactRichProbeRequested = true;
+  },
+  unrequest() {
+    exactRichProbeRequested = false;
+    exactRichProbeContainer = null;
+  },
+  committed: () => exactRichProbeCommitted,
+};`,
+  )(React, native, (type, props) => ({ type, props }));
+
+  assert.equal(probe.render(), null);
+  const container = { isConnected: true };
+  probe.request(container);
+  assert.equal(probe.committed(), false);
+  assert.equal(probe.render().container, container);
+  assert.equal(probe.committed(), true);
+  probe.unrequest();
+  assert.equal(probe.committed(), true);
+  assert.equal(probe.render(), null);
+  assert.equal(probe.committed(), false);
+});
+
+test("settings and React-root probes avoid whole-document scans", () => {
+  const result = patch();
+  const settingsSource = sourceBetween(
+    result.source,
+    "      const settingsOpened = await openSettingsPane",
+    "\n\n      return Object.freeze({",
+  );
+  assert.match(
+    settingsSource,
+    /main\[data-app-shell-main-surface="default"\]/,
+  );
+  assert.match(
+    settingsSource,
+    /data-settings-target-id="extension\.thread-colors"/,
+  );
+  assert.doesNotMatch(settingsSource, /document\.body|querySelectorAll\("\*"\)/);
+
+  const originalDocument = globalThis.document;
+  const originalHTMLElement = globalThis.HTMLElement;
+  class FakeHTMLElement {
+    constructor() {
+      this.isConnected = true;
+    }
+  }
+  const main = new FakeHTMLElement();
+  const stateNode = { current: {} };
+  main["__reactFiber$exact"] = {
+    return: { tag: 3, stateNode, return: null },
+  };
+  const queries = [];
+  globalThis.HTMLElement = FakeHTMLElement;
+  globalThis.document = {
+    body: {
+      querySelectorAll() {
+        throw new Error("React root discovery enumerated the document body");
+      },
+    },
+    querySelector(selector) {
+      queries.push(selector);
+      return main;
+    },
+    querySelectorAll: () => [],
+  };
+  try {
+    const host = new Function(result.source)();
+    assert.equal(host.applicationReactRoot(), stateNode);
+    assert.deepEqual(queries, [
+      'main[data-app-shell-main-surface="default"]',
+    ]);
+  } finally {
+    if (originalDocument === undefined) Reflect.deleteProperty(globalThis, "document");
+    else globalThis.document = originalDocument;
+    if (originalHTMLElement === undefined) {
+      Reflect.deleteProperty(globalThis, "HTMLElement");
+    } else {
+      globalThis.HTMLElement = originalHTMLElement;
+    }
+  }
+});
+
+test("the checked-in exact host applies the bounded probe correction", async () => {
+  const source = await readFile(new URL("host.js", import.meta.url), "utf8");
+  const result = patchBindingHostSource({
+    appVersion: "26.825.32147",
+    appBuild: "7303",
+    originalDigest: sha256(source),
+    source,
+  });
+  assert.equal(result.digest, sha256(result.source));
+  assert.doesNotMatch(result.source, /document\.body(?:\?\.|\.)innerText/);
+  assert.doesNotMatch(
+    result.source,
+    /document\.body\.querySelectorAll\(["']\*["']\)/,
+  );
+  assert.match(
+    result.source,
+    /main\[data-app-shell-main-surface="default"\]/,
+  );
+  assert.match(result.source, /richContentFallbacks: exactRichFallbackSnapshot/);
 });
 
 test("exact host patch scopes same thread ids by ChatGPT host identity", async () => {
