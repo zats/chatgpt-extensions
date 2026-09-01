@@ -36,6 +36,19 @@ const richContentLifecycleKinds = Object.freeze([
   "conversationItem",
 ]);
 
+const richContentProbeStages = new Set([
+  "primary-readiness",
+  "primary-diagnostics",
+  "registration-readiness",
+  "mount-request",
+  "owner-render",
+  "interactions",
+  "unmount-request",
+  "unmount-owner-render",
+]);
+
+const uiSurfaceProbeBudgetMilliseconds = 120_000;
+
 const safeDiagnosticErrorNames = new Set([
   "AbortError",
   "AggregateError",
@@ -214,6 +227,68 @@ function diagnosticErrorName(error) {
       ? error.name
       : "Error";
   return safeDiagnosticErrorNames.has(name) ? name : "Error";
+}
+
+async function executeRendererJavaScript(
+  contents,
+  source,
+  timeoutMilliseconds = 10_000,
+) {
+  if (typeof contents?.executeJavaScript !== "function") {
+    throw new TypeError("Renderer contents must support JavaScript evaluation");
+  }
+  if (typeof source !== "string") {
+    throw new TypeError("Renderer JavaScript source must be a string");
+  }
+  if (!Number.isFinite(timeoutMilliseconds) || timeoutMilliseconds <= 0) {
+    throw new TypeError("Renderer JavaScript timeout must be a positive number");
+  }
+
+  const evaluation = Promise.resolve()
+    .then(() => contents.executeJavaScript(source))
+    .then(
+      (value) => ({ status: "fulfilled", value }),
+      (error) => ({ status: "rejected", error }),
+    );
+  let timer;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(
+      () => resolve({ status: "timed-out" }),
+      timeoutMilliseconds,
+    );
+    timer.unref?.();
+  });
+  const outcome = await Promise.race([evaluation, timeout]);
+  clearTimeout(timer);
+  if (outcome.status === "rejected") throw outcome.error;
+  if (outcome.status === "timed-out") {
+    const error = new Error("Renderer JavaScript evaluation timed out");
+    error.name = "TimeoutError";
+    throw error;
+  }
+  return outcome.value;
+}
+
+function richContentProbeLifecycleEvidence(stage, aborted = false) {
+  if (!richContentProbeStages.has(stage)) {
+    throw new TypeError("Unknown rich-content probe stage");
+  }
+  if (typeof aborted !== "boolean") {
+    throw new TypeError("Rich-content probe aborted state must be a boolean");
+  }
+  return Object.freeze(
+    aborted
+      ? { stage, reason: "document-inactive" }
+      : { stage },
+  );
+}
+
+function settleProbePollFailure(error, recordFailure, finish) {
+  if (typeof recordFailure !== "function" || typeof finish !== "function") {
+    throw new TypeError("Probe poll failure handlers are required");
+  }
+  recordFailure(error);
+  return finish(false);
 }
 
 function productExtensionRealUiFailureDiagnostics(documentId, error) {
@@ -629,16 +704,17 @@ function writeCurrentRendererDocumentDiagnostics(
   return write();
 }
 
-async function probeCompletionAllowsContinuation(
-  completion,
-  lifecycle,
-  contents,
-  document,
-) {
-  return (
-    (await completion) === true &&
-    isCurrentRendererDocument(lifecycle, contents, document)
-  );
+function probeCompletionDisposition(completed, current, failureRecorded) {
+  if (
+    typeof completed !== "boolean" ||
+    typeof current !== "boolean" ||
+    typeof failureRecorded !== "boolean"
+  ) {
+    throw new TypeError("Probe completion state must use booleans");
+  }
+  if (!current) return "aborted";
+  if (completed) return "continue";
+  return failureRecorded ? "failed-recorded" : "failed-unrecorded";
 }
 
 function uiSurfaceProbeEventFile(documentId) {
@@ -1239,18 +1315,38 @@ function initialize() {
     );
   }
 
+  function logRichContentProbeStage(contents, document, stage) {
+    log("rich-content-probe-stage", {
+      webContentsId: contents.id,
+      documentId: document.id,
+      ...richContentProbeLifecycleEvidence(stage),
+    });
+  }
+
+  function logRichContentProbeAborted(contents, document, stage) {
+    log("rich-content-probe-aborted", {
+      webContentsId: contents.id,
+      documentId: document.id,
+      ...richContentProbeLifecycleEvidence(stage, true),
+    });
+  }
+
   async function readRichContentDiagnostics(contents) {
-    return contents.executeJavaScript(`({
-      registrations:
-        window.__CGPTX_HOST__?._debug?.richContentRegistrationCounts?.() ?? null,
-      hits: window.__CGPTX_HOST__?._debug?.richContentOwnerHits?.() ?? null,
-      lifecycle:
-        window.__CGPTX_HOST__?._debug?.richContentLifecycle?.() ?? null,
-      fallbacks: window.__CGPTX_HOST__?._debug?.richContentFallbacks?.() ?? null,
-      drift: window.__CGPTX_HOST__?._debug?.richContentOwnerDrift?.() ?? true,
-      cloudOwnerReady:
-        window.__CGPTX_HOST__?._debug?.cloudConversationItemOwnerReady?.() === true,
-    })`);
+    return executeRendererJavaScript(
+      contents,
+      `({
+        registrations:
+          window.__CGPTX_HOST__?._debug?.richContentRegistrationCounts?.() ?? null,
+        hits: window.__CGPTX_HOST__?._debug?.richContentOwnerHits?.() ?? null,
+        lifecycle:
+          window.__CGPTX_HOST__?._debug?.richContentLifecycle?.() ?? null,
+        fallbacks: window.__CGPTX_HOST__?._debug?.richContentFallbacks?.() ?? null,
+        drift: window.__CGPTX_HOST__?._debug?.richContentOwnerDrift?.() ?? true,
+        cloudOwnerReady:
+          window.__CGPTX_HOST__?._debug?.cloudConversationItemOwnerReady?.() === true,
+      })`,
+      5_000,
+    );
   }
 
   async function waitForRichContentDiagnostics(
@@ -1285,8 +1381,10 @@ function initialize() {
       ) {
         break;
       }
-      interactions[specification.key] = await contents.executeJavaScript(
+      interactions[specification.key] = await executeRendererJavaScript(
+        contents,
         richContentInteractionScript(specification, specifications),
+        60_000,
       );
     }
     return interactions;
@@ -1296,6 +1394,7 @@ function initialize() {
     contents,
     document,
     mountedDiagnostics,
+    recordStage,
   ) {
     stopRichContentProbePoller(document.id);
     const requestFile = path.join(
@@ -1304,6 +1403,7 @@ function initialize() {
     );
     let settled = false;
     let handling = false;
+    let failureRecorded = false;
     let timer;
     let resolveCompletion;
     const completion = new Promise((resolve) => {
@@ -1320,6 +1420,34 @@ function initialize() {
       return true;
     };
     const stop = () => finish(false);
+    const recordFailure = (error, value = mountedDiagnostics) => {
+      if (!isCurrentRendererDocument(rendererLifecycle, contents, document)) {
+        return false;
+      }
+      const diagnostics = {
+        ...value,
+        unmounted: false,
+        errorName: diagnosticErrorName(error),
+      };
+      try {
+        writeProbeDiagnostics(
+          contents,
+          document,
+          "rich-content-unmount-diagnostics.json",
+          diagnostics,
+        );
+        log("rich-content-probe-unmount-failed", {
+          webContentsId: contents.id,
+          documentId: document.id,
+          diagnostics,
+          errorName: diagnosticErrorName(error),
+        });
+        failureRecorded = true;
+        return true;
+      } catch {
+        return false;
+      }
+    };
     const inspect = async () => {
       if (settled || handling) return;
       if (
@@ -1338,8 +1466,8 @@ function initialize() {
         ) {
           return;
         }
-      } catch {
-        finish(false);
+      } catch (error) {
+        settleProbePollFailure(error, recordFailure, finish);
         return;
       }
       handling = true;
@@ -1347,8 +1475,11 @@ function initialize() {
       let diagnostics = { ...mountedDiagnostics, unmounted: false };
       try {
         fs.unlinkSync(requestFile);
-        const unmounted = await contents.executeJavaScript(
+        recordStage("unmount-owner-render");
+        const unmounted = await executeRendererJavaScript(
+          contents,
           "window.__CGPTX_HOST__?._debug?.unmountRichContentProbe?.() === true",
+          10_000,
         );
         if (!unmounted) {
           throw new Error("The exact rich-content probe did not unmount");
@@ -1383,24 +1514,7 @@ function initialize() {
         if (!isCurrentRendererDocument(rendererLifecycle, contents, document)) {
           return;
         }
-        diagnostics = {
-          ...diagnostics,
-          errorName: diagnosticErrorName(error),
-        };
-        try {
-          writeProbeDiagnostics(
-            contents,
-            document,
-            "rich-content-unmount-diagnostics.json",
-            diagnostics,
-          );
-          log("rich-content-probe-unmount-failed", {
-            webContentsId: contents.id,
-            documentId: document.id,
-            diagnostics,
-            errorName: diagnosticErrorName(error),
-          });
-        } catch {}
+        recordFailure(error, diagnostics);
       } finally {
         finish(completed);
       }
@@ -1409,12 +1523,21 @@ function initialize() {
     timer.unref?.();
     richContentProbePollers.set(document.id, stop);
     void inspect();
-    return completion;
+    return Object.freeze({
+      completion,
+      failureRecorded: () => failureRecorded,
+      recordFailure,
+    });
   }
 
   async function interactWithUiSurfaceProbe(contents, document) {
-    const interactionDiagnostics = await contents.executeJavaScript(`(async () => {
+    const interactionDiagnostics = await executeRendererJavaScript(
+      contents,
+      `(async () => {
       const wait = () => new Promise((resolve) => setTimeout(resolve, 25));
+      const probeDeadline = Date.now() + ${uiSurfaceProbeBudgetMilliseconds};
+      const stageDeadline = (milliseconds) =>
+        Math.min(probeDeadline, Date.now() + milliseconds);
       const isVisible = (element) => {
         if (!(element instanceof HTMLElement) || !element.isConnected) return false;
         const rect = element.getBoundingClientRect();
@@ -1425,7 +1548,7 @@ function initialize() {
       const find = (selector) =>
         Array.from(document.querySelectorAll(selector)).find(isVisible);
       const waitFor = async (selector, timeout = 2_000) => {
-        const deadline = Date.now() + timeout;
+        const deadline = stageDeadline(timeout);
         let value;
         while (Date.now() < deadline) {
           value = find(selector);
@@ -1478,7 +1601,7 @@ function initialize() {
         const oldLabel = labelOf(oldMarker);
         const expectedLabel = nextCountLabel(oldLabel);
         if (clicked) target.click();
-        const deadline = Date.now() + 10_000;
+        const deadline = stageDeadline(10_000);
         let currentMarker;
         let currentLabel = "";
         while (clicked && Date.now() < deadline) {
@@ -1522,7 +1645,7 @@ function initialize() {
         const invalidateFound = oldInvalidate instanceof HTMLElement;
         const invalidateClicked = invalidateFound && typeof oldInvalidate.click === "function";
         if (invalidateClicked) oldInvalidate.click();
-        const deadline = Date.now() + 10_000;
+        const deadline = stageDeadline(10_000);
         let replacementAction;
         while (invalidateClicked && Date.now() < deadline) {
           replacementAction = find(actionSelector);
@@ -1577,7 +1700,7 @@ function initialize() {
         '[data-ui-probe-render-control="action"]';
       const preflightComposerState = async (state) => {
         const applicability = composerApplicability[state];
-        const deadline = Date.now() + 20_000;
+        const deadline = stageDeadline(20_000);
         let missingActions = applicability.actions;
         let missingRenders = applicability.renders;
         while (Date.now() < deadline) {
@@ -1671,7 +1794,7 @@ function initialize() {
               ?.startsWith('ChatGPT Extensions gate fixture '),
         );
       const waitForFixtureThreadRow = async (timeout = 20_000) => {
-        const deadline = Date.now() + timeout;
+        const deadline = stageDeadline(timeout);
         let row;
         while (!(row instanceof HTMLElement) && Date.now() < deadline) {
           row = findFixtureThreadRow();
@@ -1685,7 +1808,7 @@ function initialize() {
         if (!(target instanceof HTMLElement)) return false;
         const previousLocation = location.href;
         activate(target);
-        const deadline = Date.now() + 10_000;
+        const deadline = stageDeadline(10_000);
         while (Date.now() < deadline) {
           if (location.href !== previousLocation) return true;
           await wait();
@@ -1750,7 +1873,7 @@ function initialize() {
       const announcementPrimaryFound = announcementMarker instanceof HTMLElement &&
         announcementPrimary instanceof HTMLElement;
       announcementPrimary?.click?.();
-      const primaryDeadline = Date.now() + 10_000;
+      const primaryDeadline = stageDeadline(10_000);
       let currentAnnouncement;
       while (announcementPrimaryFound && Date.now() < primaryDeadline) {
         currentAnnouncement = find(announcementSelector);
@@ -1775,7 +1898,7 @@ function initialize() {
       const dismissFound = dismissMarker instanceof HTMLElement &&
         dismissButton instanceof HTMLElement;
       dismissButton?.click?.();
-      const dismissDeadline = Date.now() + 10_000;
+      const dismissDeadline = stageDeadline(10_000);
       let absentChecks = 0;
       while (dismissFound && Date.now() < dismissDeadline) {
         absentChecks = document.querySelector(announcementSelector) === null
@@ -1809,7 +1932,7 @@ function initialize() {
       const threadRow = clickable(threadRowMarker) ?? threadRowMarker;
       const threadRowFound = threadRow instanceof HTMLElement;
       threadRow?.click?.();
-      const threadDeadline = Date.now() + 20_000;
+      const threadDeadline = stageDeadline(20_000);
       while (threadRowFound && Date.now() < threadDeadline) {
         if (
           !find('[data-cgptx-home-suggestion="ui-surface-probe.suggestion"]') &&
@@ -1831,7 +1954,9 @@ function initialize() {
           thread: { ...thread, threadRowFound },
         },
       };
-    })()`);
+      })()`,
+      uiSurfaceProbeBudgetMilliseconds + 10_000,
+    );
     const diagnostics = Object.freeze({
       ...interactionDiagnostics,
       rendererDocumentId: document.id,
@@ -1872,7 +1997,7 @@ function initialize() {
   ) {
     const expression = primaryAppShellReadyExpression();
     return waitForPrimaryUiReadiness({
-      evaluate: () => contents.executeJavaScript(expression),
+      evaluate: () => executeRendererJavaScript(contents, expression, 5_000),
       isCurrent: () =>
         rendererLifecycle?.isCurrent(contents, document.id) === true &&
         contents.isDestroyed?.() !== true,
@@ -1952,8 +2077,10 @@ function initialize() {
   }
 
   async function interactWithProductExtensions(contents, document) {
-    const diagnostics = await contents.executeJavaScript(
+    const diagnostics = await executeRendererJavaScript(
+      contents,
       "window.__CGPTX_HOST__?._debug?.runProductExtensionProbe?.()",
+      60_000,
     );
     const complete = {
       ...diagnostics,
@@ -1987,8 +2114,10 @@ function initialize() {
   async function interactWithProductExtensionsRealUi(contents, document) {
     let diagnostics;
     try {
-      diagnostics = await contents.executeJavaScript(
+      diagnostics = await executeRendererJavaScript(
+        contents,
         "window.__CGPTX_HOST__?._debug?.runProductExtensionRealUiProbe?.()",
+        60_000,
       );
     } catch (error) {
       const failure = productExtensionRealUiFailureDiagnostics(
@@ -2128,49 +2257,68 @@ ${code}
 
   async function injectIntoContents(contents, entries, document) {
     const { url } = document;
+    let richContentProbeStage = "primary-readiness";
+    const recordRichContentProbeStage = (stage) => {
+      richContentProbeStage = stage;
+      logRichContentProbeStage(contents, document, stage);
+    };
     if (!rendererLifecycle?.isCurrent(contents, document.id)) return;
     try {
       if (
         productExtensionProbeRequested ||
         productExtensionRealUiProbeRequested
       ) {
-        await contents.executeJavaScript(`Object.defineProperty(
-          window,
-          "__CGPTX_V5_TEST_MODE__",
-          {
-            configurable: true,
-            value: Object.freeze({
-              productExtensionProbe: ${productExtensionProbeRequested},
-              productExtensionRealUiProbe: ${productExtensionRealUiProbeRequested},
-            }),
-          },
-        ); true`);
+        await executeRendererJavaScript(
+          contents,
+          `Object.defineProperty(
+            window,
+            "__CGPTX_V5_TEST_MODE__",
+            {
+              configurable: true,
+              value: Object.freeze({
+                productExtensionProbe: ${productExtensionProbeRequested},
+                productExtensionRealUiProbe: ${productExtensionRealUiProbeRequested},
+              }),
+            },
+          ); true`,
+          10_000,
+        );
       }
-      await contents.executeJavaScript(hostSource);
+      await executeRendererJavaScript(contents, hostSource, 30_000);
       if (!rendererLifecycle.isCurrent(contents, document.id)) return;
-      const hostReady = await contents.executeJavaScript(
+      const hostReady = await executeRendererJavaScript(
+        contents,
         rendererHostReadyExpression(launch.appVersion),
+        5_000,
       );
       if (!hostReady) throw new Error("The exact binding host did not initialize");
       if (!rendererLifecycle.isCurrent(contents, document.id)) return;
-      const nativeReady = await contents.executeJavaScript(
+      const nativeReady = await executeRendererJavaScript(
+        contents,
         "Promise.resolve(window.__CGPTX_NATIVE_READY__).then((value) => value === true)",
+        30_000,
       );
       if (!nativeReady) {
-        const nativeBindingError = await contents.executeJavaScript(
+        const nativeBindingError = await executeRendererJavaScript(
+          contents,
           "window.__CGPTX_HOST__?._debug?.nativeBindingError?.() ?? null",
+          5_000,
         );
-        const documentState = await contents.executeJavaScript(`(() => {
-          const elements = Array.from(document.body?.querySelectorAll("*") ?? []);
-          return {
-            readyState: document.readyState,
-            bodyChildren: document.body?.children.length ?? 0,
-            elements: elements.length,
-            reactFiberElements: elements.filter((element) =>
-              Object.keys(element).some((key) => key.startsWith("__reactFiber$")),
-            ).length,
-          };
-        })()`);
+        const documentState = await executeRendererJavaScript(
+          contents,
+          `(() => {
+            const elements = Array.from(document.body?.querySelectorAll("*") ?? []);
+            return {
+              readyState: document.readyState,
+              bodyChildren: document.body?.children.length ?? 0,
+              elements: elements.length,
+              reactFiberElements: elements.filter((element) =>
+                Object.keys(element).some((key) => key.startsWith("__reactFiber$")),
+              ).length,
+            };
+          })()`,
+          5_000,
+        );
         throw new Error(
           nativeBindingError
             ? `The exact native binding reported an error; document=${JSON.stringify(documentState)}`
@@ -2178,9 +2326,11 @@ ${code}
         );
       }
       if (!rendererLifecycle.isCurrent(contents, document.id)) return;
-      await contents.executeJavaScript(rendererHostSource);
-      const runtimeReady = await contents.executeJavaScript(
+      await executeRendererJavaScript(contents, rendererHostSource, 30_000);
+      const runtimeReady = await executeRendererJavaScript(
+        contents,
         "Boolean(window.__CHATGPTX_V5_RENDERER_HOST__?.registerRendererEntry)",
+        5_000,
       );
       if (!runtimeReady) throw new Error("The v5 renderer host did not initialize");
     } catch (error) {
@@ -2199,7 +2349,11 @@ ${code}
     for (const entry of entries) {
       if (!rendererLifecycle.isCurrent(contents, document.id)) return;
       try {
-        const result = await contents.executeJavaScript(entry.source);
+        const result = await executeRendererJavaScript(
+          contents,
+          entry.source,
+          30_000,
+        );
         if (result !== true) throw new Error("The renderer entry did not register");
         log("renderer-entry-registered", {
           id: entry.extension.id,
@@ -2221,20 +2375,45 @@ ${code}
         });
       }
     }
+    if (richContentProbeRequested) {
+      recordRichContentProbeStage("primary-readiness");
+    }
     const primaryUiDocument = liveProbeSuiteRequested
       ? await waitForPrimaryUiDocument(contents, document)
       : false;
     if (!isCurrentRendererDocument(rendererLifecycle, contents, document)) {
+      if (richContentProbeRequested) {
+        logRichContentProbeAborted(
+          contents,
+          document,
+          richContentProbeStage,
+        );
+      }
       return;
     }
     if (liveProbeSuiteRequested) {
+      if (richContentProbeRequested) {
+        recordRichContentProbeStage("primary-diagnostics");
+      }
       let diagnostics;
       try {
-        diagnostics = await contents.executeJavaScript(
+        diagnostics = await executeRendererJavaScript(
+          contents,
           primaryAppShellDiagnosticsExpression(),
+          5_000,
         );
       } catch {
         diagnostics = {};
+      }
+      if (!isCurrentRendererDocument(rendererLifecycle, contents, document)) {
+        if (richContentProbeRequested) {
+          logRichContentProbeAborted(
+            contents,
+            document,
+            richContentProbeStage,
+          );
+        }
+        return;
       }
       log("primary-ui-readiness", {
         webContentsId: contents.id,
@@ -2257,6 +2436,7 @@ ${code}
         stage: "registration-readiness",
       };
       try {
+        recordRichContentProbeStage("registration-readiness");
         diagnostics = {
           ...probeDocument,
           ...(await waitForRichContentDiagnostics(
@@ -2272,8 +2452,11 @@ ${code}
             `The rich-content registrations were not ready: ${JSON.stringify(diagnostics)}`,
           );
         }
-        const mounted = await contents.executeJavaScript(
+        recordRichContentProbeStage("mount-request");
+        const mounted = await executeRendererJavaScript(
+          contents,
           "window.__CGPTX_HOST__?._debug?.mountRichContentProbe?.() === true",
+          10_000,
         );
         diagnostics = {
           ...probeDocument,
@@ -2284,6 +2467,7 @@ ${code}
         if (!mounted) {
           throw new Error("The exact rich-content probe did not mount");
         }
+        recordRichContentProbeStage("owner-render");
         diagnostics = await waitForRichContentDiagnostics(
           contents,
           document,
@@ -2307,6 +2491,7 @@ ${code}
             `The exact rich-content owners did not render: ${JSON.stringify(diagnostics)}`,
           );
         }
+        recordRichContentProbeStage("interactions");
         const interactions = await interactWithRichContentProbe(
           contents,
           document,
@@ -2341,23 +2526,46 @@ ${code}
           documentId: document.id,
           diagnostics,
         });
-        const unmountCompletion = startRichContentProbeUnmountPoller(
+        recordRichContentProbeStage("unmount-request");
+        const unmountProbe = startRichContentProbeUnmountPoller(
           contents,
           document,
           diagnostics,
+          recordRichContentProbeStage,
         );
-        if (
-          !(await probeCompletionAllowsContinuation(
-            unmountCompletion,
-            rendererLifecycle,
-            contents,
-            document,
-          ))
-        ) {
+        const unmountCompleted = await unmountProbe.completion;
+        const unmountDisposition = probeCompletionDisposition(
+          unmountCompleted,
+          isCurrentRendererDocument(rendererLifecycle, contents, document),
+          unmountProbe.failureRecorded(),
+        );
+        if (unmountDisposition !== "continue") {
+          if (unmountDisposition === "aborted") {
+            logRichContentProbeAborted(
+              contents,
+              document,
+              richContentProbeStage,
+            );
+          } else if (unmountDisposition === "failed-unrecorded") {
+            if (
+              !unmountProbe.recordFailure(
+                new Error("The rich-content unmount probe stopped"),
+              )
+            ) {
+              throw new Error(
+                "The rich-content unmount failure could not be recorded",
+              );
+            }
+          }
           return;
         }
       } catch (error) {
         if (!isCurrentRendererDocument(rendererLifecycle, contents, document)) {
+          logRichContentProbeAborted(
+            contents,
+            document,
+            richContentProbeStage,
+          );
           return;
         }
         diagnostics = {
@@ -2882,11 +3090,12 @@ ${code}
 module.exports = Object.freeze({
   createPrimaryDocumentClaim,
   createRendererLifecycle,
+  executeRendererJavaScript,
   isCurrentRendererDocument,
   primaryAppShellReadyExpression,
   primaryAppShellDiagnosticsExpression,
   productExtensionRealUiFailureDiagnostics,
-  probeCompletionAllowsContinuation,
+  probeCompletionDisposition,
   requireCurrentRendererDocument,
   rendererHostReadyExpression,
   productExtensionDiagnosticsReady,
@@ -2896,11 +3105,13 @@ module.exports = Object.freeze({
   richContentFullyUnmounted,
   richContentInteractionScript,
   richContentInteractionsReady,
+  richContentProbeLifecycleEvidence,
   richContentOwnersReady,
   richContentRegistrationsReady,
   richContentUnmountRequested,
   richContentUnmountDiagnostics,
   richMessageProbeEventFile,
+  settleProbePollFailure,
   startRendererLifecycle,
   uiSurfaceInteractionReady,
   uiSurfaceProbeEventFile,

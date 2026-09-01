@@ -138,13 +138,16 @@ const safeGateRuntimeEventNames = Object.freeze([
   "renderer-channel-connect-failed",
   "renderer-channel-disconnect-failed",
   "renderer-channel-inject-failed",
+  "renderer-document-inactive",
   "renderer-entry-registered",
   "renderer-entry-registration-failed",
   "renderer-host-injection-failed",
   "renderer-injected",
+  "rich-content-probe-aborted",
   "rich-content-probe-failed",
   "rich-content-probe-mounted",
   "rich-content-probe-skipped",
+  "rich-content-probe-stage",
   "rich-content-probe-unmount-failed",
   "rich-content-probe-unmounted",
   "runtime-loaded",
@@ -155,6 +158,25 @@ const safeGateRuntimeEventNames = Object.freeze([
 const safeRichProbeEventNames = new Set([
   ...richProbeInteractionEvents,
   ...richProbeDisposalEvents,
+]);
+const safeRichProbeProgressStages = new Set([
+  "primary-readiness",
+  "primary-diagnostics",
+  "registration-readiness",
+  "mount-request",
+  "owner-render",
+  "interactions",
+  "unmount-request",
+  "unmount-owner-render",
+]);
+const richProbeProgressOutcomes = new Map([
+  ["rich-content-probe-stage", "entered"],
+  ["rich-content-probe-mounted", "mounted"],
+  ["rich-content-probe-unmounted", "unmounted"],
+  ["rich-content-probe-failed", "failed"],
+  ["rich-content-probe-unmount-failed", "unmount-failed"],
+  ["rich-content-probe-skipped", "skipped"],
+  ["rich-content-probe-aborted", "aborted"],
 ]);
 
 function safeErrorName(error) {
@@ -229,6 +251,46 @@ export function summarizeRichProbeEventSequence(events) {
       )
       .slice(0, 256),
   );
+}
+
+export function summarizeGateRichProbeProgress(records) {
+  const progressByDocument = new Map();
+  let sequence = 0;
+  for (const record of Array.isArray(records) ? records : []) {
+    const outcome = richProbeProgressOutcomes.get(record?.event);
+    if (!outcome) continue;
+    if (
+      !Number.isSafeInteger(record?.webContentsId) ||
+      typeof record?.documentId !== "string" ||
+      record.documentId.length === 0
+    ) {
+      continue;
+    }
+    const documentKey = `${record.webContentsId}\0${record.documentId}`;
+    const prior = progressByDocument.get(documentKey)?.progress;
+    const stage = safeRichProbeProgressStages.has(record?.stage)
+      ? record.stage
+      : prior?.stage;
+    if (!stage) continue;
+    progressByDocument.set(documentKey, {
+      progress: Object.freeze({ stage, outcome }),
+      sequence: sequence++,
+      skipped: outcome === "skipped",
+    });
+  }
+  const progress = [...progressByDocument.values()];
+  const terminalFailures = progress.filter((entry) =>
+    ["failed", "unmount-failed"].includes(entry.progress.outcome),
+  );
+  const nonSkipped = progress.filter((entry) => !entry.skipped);
+  const candidates =
+    terminalFailures.length > 0
+      ? terminalFailures
+      : nonSkipped.length > 0
+        ? nonSkipped
+        : progress;
+  return candidates.sort((left, right) => left.sequence - right.sequence).at(-1)
+    ?.progress;
 }
 
 export function summarizeGateRichProbeReadiness(
@@ -1360,6 +1422,7 @@ async function runGate(options) {
   let runtimeEventCounts;
   let richEventFile;
   let richEventSequence;
+  let richProbeProgress;
   let richProbeReadiness;
   let primaryUiReadiness;
   let richDiagnostics;
@@ -1639,6 +1702,7 @@ async function runGate(options) {
       const runtimeRecords = readRuntimeRecords(layout.logDirectory);
       runtimeEventCounts = summarizeGateRuntimeEvents(runtimeRecords);
       primaryUiReadiness = summarizeGatePrimaryUiReadiness(runtimeRecords);
+      richProbeProgress = summarizeGateRichProbeProgress(runtimeRecords);
       richProbeReadiness = summarizeGateRichProbeReadiness(runtimeRecords, [
         unmountDiagnostics,
         richDiagnostics,
@@ -1712,6 +1776,9 @@ async function runGate(options) {
         : {}),
       ...(failure && richEventSequence
         ? { richEventSequence }
+        : {}),
+      ...(failure && richProbeProgress
+        ? { richProbeProgress }
         : {}),
       ...(failure && richProbeReadiness
         ? { richProbeReadiness }

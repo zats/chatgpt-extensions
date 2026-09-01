@@ -19,6 +19,7 @@ import {
   seedGateThreads,
   summarizeNativeMainEvidence,
   summarizeGatePrimaryUiReadiness,
+  summarizeGateRichProbeProgress,
   summarizeGateRuntimeEvents,
   summarizeGateRichProbeReadiness,
   summarizeRichProbeEventSequence,
@@ -92,10 +93,16 @@ test("public gate evidence uses strict allowlists", () => {
     summarizeGateRuntimeEvents([
       { event: "renderer-injected", title: privateValue },
       { event: "renderer-injected", title: privateValue },
+      {
+        event: "renderer-document-inactive",
+        documentId: privateValue,
+        reason: privateValue,
+      },
       { event: "rich-content-probe-skipped", threadId: privateValue },
       { event: privateValue },
     ]),
     {
+      "renderer-document-inactive": 1,
       "renderer-injected": 2,
       "rich-content-probe-skipped": 1,
     },
@@ -140,6 +147,127 @@ test("public gate evidence uses strict allowlists", () => {
     },
   );
   assert.equal(summarizeGatePrimaryUiReadiness([]), undefined);
+  const progressStages = [
+    "primary-readiness",
+    "primary-diagnostics",
+    "registration-readiness",
+    "mount-request",
+    "owner-render",
+    "interactions",
+    "unmount-request",
+    "unmount-owner-render",
+  ];
+  for (const stage of progressStages) {
+    assert.deepEqual(
+      summarizeGateRichProbeProgress([
+        {
+          event: "rich-content-probe-stage",
+          webContentsId: 1,
+          documentId: privateValue,
+          stage,
+          title: privateValue,
+          url: privateValue,
+          error: privateValue,
+        },
+      ]),
+      { stage, outcome: "entered" },
+    );
+  }
+  const terminalOutcomes = new Map([
+    ["rich-content-probe-mounted", "mounted"],
+    ["rich-content-probe-unmounted", "unmounted"],
+    ["rich-content-probe-failed", "failed"],
+    ["rich-content-probe-unmount-failed", "unmount-failed"],
+    ["rich-content-probe-skipped", "skipped"],
+    ["rich-content-probe-aborted", "aborted"],
+  ]);
+  for (const [event, outcome] of terminalOutcomes) {
+    const progress = summarizeGateRichProbeProgress([
+      {
+        event: "rich-content-probe-stage",
+        webContentsId: 1,
+        documentId: "document-a",
+        stage: "owner-render",
+      },
+      {
+        event,
+        webContentsId: 1,
+        documentId: "document-a",
+        title: privateValue,
+        url: privateValue,
+        error: privateValue,
+        outcome: privateValue,
+        extra: privateValue,
+      },
+    ]);
+    assert.deepEqual(progress, { stage: "owner-render", outcome });
+    assert.doesNotMatch(JSON.stringify(progress), new RegExp(privateValue));
+  }
+  assert.deepEqual(
+    summarizeGateRichProbeProgress([
+      {
+        event: "rich-content-probe-stage",
+        webContentsId: 1,
+        documentId: "document-a",
+        stage: "interactions",
+      },
+      {
+        event: "rich-content-probe-stage",
+        webContentsId: 2,
+        documentId: "document-b",
+        stage: "primary-diagnostics",
+      },
+      {
+        event: "rich-content-probe-skipped",
+        webContentsId: 2,
+        documentId: "document-b",
+      },
+    ]),
+    { stage: "interactions", outcome: "entered" },
+  );
+  assert.deepEqual(
+    summarizeGateRichProbeProgress([
+      {
+        event: "rich-content-probe-stage",
+        webContentsId: 1,
+        documentId: "primary-document",
+        stage: "owner-render",
+      },
+      {
+        event: "rich-content-probe-failed",
+        webContentsId: 1,
+        documentId: "primary-document",
+      },
+      {
+        event: "rich-content-probe-stage",
+        webContentsId: 2,
+        documentId: "secondary-document",
+        stage: "primary-readiness",
+      },
+    ]),
+    { stage: "owner-render", outcome: "failed" },
+  );
+  assert.equal(
+    summarizeGateRichProbeProgress([
+      {
+        event: "rich-content-probe-stage",
+        stage: "owner-render",
+        documentId: "document-without-web-contents",
+      },
+      {
+        event: "rich-content-probe-stage",
+        webContentsId: 3,
+        stage: "owner-render",
+      },
+    ]),
+    undefined,
+  );
+  assert.equal(
+    summarizeGateRichProbeProgress([
+      { event: "__proto__", stage: "owner-render" },
+    ]),
+    undefined,
+  );
   assert.deepEqual(
     summarizeRichProbeEventSequence([
       { name: "extension.activate", title: privateValue },

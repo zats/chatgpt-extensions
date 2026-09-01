@@ -10,6 +10,7 @@ import {
   createGateEnvironment,
   parseStartCommand,
   safeFailure,
+  safeRichProbeProgress,
   safeRichProbeReadiness,
   safePrimaryUiReadiness,
   summarizeLauncherResult,
@@ -315,6 +316,72 @@ test("rich probe readiness accepts only the exact public boolean shape", () => {
   );
 });
 
+test("rich probe progress accepts only fixed stages, outcomes, and keys", () => {
+  const progress = { stage: "owner-render", outcome: "failed" };
+  assert.deepEqual(safeRichProbeProgress(progress), progress);
+  for (const stage of [
+    "primary-readiness",
+    "primary-diagnostics",
+    "registration-readiness",
+    "mount-request",
+    "owner-render",
+    "interactions",
+    "unmount-request",
+    "unmount-owner-render",
+  ]) {
+    assert.deepEqual(safeRichProbeProgress({ ...progress, stage }), {
+      stage,
+      outcome: "failed",
+    });
+  }
+  for (const outcome of [
+    "entered",
+    "mounted",
+    "unmounted",
+    "failed",
+    "unmount-failed",
+    "skipped",
+    "aborted",
+  ]) {
+    assert.deepEqual(safeRichProbeProgress({ ...progress, outcome }), {
+      stage: "owner-render",
+      outcome,
+    });
+  }
+  assert.equal(
+    safeRichProbeProgress({ ...progress, stage: "private-stage" }),
+    undefined,
+  );
+  assert.equal(
+    safeRichProbeProgress({ ...progress, outcome: "private-outcome" }),
+    undefined,
+  );
+  assert.equal(
+    safeRichProbeProgress({
+      ...progress,
+      title: "PrivateThreadTitle123",
+    }),
+    undefined,
+  );
+  assert.equal(
+    safeRichProbeProgress({
+      ...progress,
+      diagnostics: { url: "chatgpt://private" },
+    }),
+    undefined,
+  );
+  assert.equal(
+    summarizeLauncherResult({
+      status: "failed",
+      richProbeProgress: {
+        ...progress,
+        error: "PrivateThreadTitle123",
+      },
+    }).richProbeProgress,
+    undefined,
+  );
+});
+
 test("public version-gate output strips launcher evidence and private error names", () => {
   const privateValue = "PrivateThreadTitle123";
   const value = summarizeLauncherResult(
@@ -343,6 +410,7 @@ test("public version-gate output strips launcher evidence and private error name
         message: privateValue,
       },
       runtimeEventCounts: {
+        "renderer-document-inactive": 1,
         "rich-content-probe-skipped": 2,
         "renderer-injected": -1,
         [privateValue]: 99,
@@ -352,6 +420,10 @@ test("public version-gate output strips launcher evidence and private error name
         privateValue,
         "code-block.mount",
       ],
+      richProbeProgress: {
+        stage: "owner-render",
+        outcome: "failed",
+      },
       richProbeReadiness: completeRichProbeReadiness(),
       primaryUiReadiness: {
         attempts: 2,
@@ -381,8 +453,12 @@ test("public version-gate output strips launcher evidence and private error name
       { name: "activation:one:renderer", status: "failed" },
     ],
     failure: { code: "launcher-gate-failed", errorName: "Error" },
-    runtimeEventCounts: { "rich-content-probe-skipped": 2 },
+    runtimeEventCounts: {
+      "renderer-document-inactive": 1,
+      "rich-content-probe-skipped": 2,
+    },
     richEventSequence: ["extension.activate", "code-block.mount"],
+    richProbeProgress: { stage: "owner-render", outcome: "failed" },
     richProbeReadiness: completeRichProbeReadiness(),
     primaryUiReadiness: {
       attempts: 2,
@@ -403,6 +479,13 @@ test("public version-gate output strips launcher evidence and private error name
     },
   });
   assert.doesNotMatch(JSON.stringify(value), new RegExp(privateValue));
+  assert.equal(
+    safeRichProbeProgress({
+      ...value.richProbeProgress,
+      privateAccount: privateValue,
+    }),
+    undefined,
+  );
   assert.equal(
     safePrimaryUiReadiness({
       ...value.primaryUiReadiness,
@@ -533,6 +616,7 @@ const failed = {
     { name: "unknown-gate", status: "failed", evidence: { title: privateValue } },
   ],
   failure: { code: privateValue, errorName: privateValue, message: privateValue },
+  richProbeProgress: { stage: "owner-render", outcome: "failed" },
   richProbeReadiness: ${JSON.stringify(completeRichProbeReadiness())},
   extra: privateValue,
 };
@@ -573,6 +657,12 @@ if (${JSON.stringify(expectedStatus)} === "failed") process.exitCode = 1;
       assert.deepEqual(
         parsed.launcher?.richProbeReadiness,
         expectedStatus === "failed" ? completeRichProbeReadiness() : undefined,
+      );
+      assert.deepEqual(
+        parsed.launcher?.richProbeProgress,
+        expectedStatus === "failed"
+          ? { stage: "owner-render", outcome: "failed" }
+          : undefined,
       );
     }
   } finally {

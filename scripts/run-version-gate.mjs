@@ -86,13 +86,16 @@ const safeRuntimeEventNames = Object.freeze([
   "renderer-channel-connect-failed",
   "renderer-channel-disconnect-failed",
   "renderer-channel-inject-failed",
+  "renderer-document-inactive",
   "renderer-entry-registered",
   "renderer-entry-registration-failed",
   "renderer-host-injection-failed",
   "renderer-injected",
+  "rich-content-probe-aborted",
   "rich-content-probe-failed",
   "rich-content-probe-mounted",
   "rich-content-probe-skipped",
+  "rich-content-probe-stage",
   "rich-content-probe-unmount-failed",
   "rich-content-probe-unmounted",
   "runtime-loaded",
@@ -109,6 +112,25 @@ const safeRichProbeStages = new Set([
   "owner-render",
   "mounted",
   "interacted",
+]);
+const safeRichProbeProgressStages = new Set([
+  "primary-readiness",
+  "primary-diagnostics",
+  "registration-readiness",
+  "mount-request",
+  "owner-render",
+  "interactions",
+  "unmount-request",
+  "unmount-owner-render",
+]);
+const safeRichProbeProgressOutcomes = new Set([
+  "entered",
+  "mounted",
+  "unmounted",
+  "failed",
+  "unmount-failed",
+  "skipped",
+  "aborted",
 ]);
 const safeRichProbeGroupKeys = Object.freeze({
   registrations: Object.freeze([
@@ -254,6 +276,26 @@ export function safeRichProbeReadiness(value) {
     fallbacks,
     interactions,
   });
+}
+
+export function safeRichProbeProgress(value) {
+  const keys =
+    value && typeof value === "object" && !Array.isArray(value)
+      ? Object.keys(value).sort()
+      : [];
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    keys.length !== 2 ||
+    keys[0] !== "outcome" ||
+    keys[1] !== "stage" ||
+    !safeRichProbeProgressStages.has(value.stage) ||
+    !safeRichProbeProgressOutcomes.has(value.outcome)
+  ) {
+    return undefined;
+  }
+  return Object.freeze({ stage: value.stage, outcome: value.outcome });
 }
 
 export function safePrimaryUiReadiness(value) {
@@ -510,6 +552,9 @@ export function summarizeLauncherResult(value, expectations = {}) {
   const richProbeReadiness = safeRichProbeReadiness(
     value?.richProbeReadiness,
   );
+  const richProbeProgress = safeRichProbeProgress(
+    value?.richProbeProgress,
+  );
   const primaryUiReadiness = safePrimaryUiReadiness(
     value?.primaryUiReadiness,
   );
@@ -550,6 +595,7 @@ export function summarizeLauncherResult(value, expectations = {}) {
             ? { richEventSequence }
             : {}),
           ...(richProbeReadiness ? { richProbeReadiness } : {}),
+          ...(richProbeProgress ? { richProbeProgress } : {}),
           ...(primaryUiReadiness ? { primaryUiReadiness } : {}),
         }),
   });

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import bootstrap from "./bootstrap.cjs";
@@ -7,10 +8,11 @@ import bootstrap from "./bootstrap.cjs";
 const {
   createPrimaryDocumentClaim,
   createRendererLifecycle,
+  executeRendererJavaScript,
   isCurrentRendererDocument,
   primaryAppShellDiagnosticsExpression,
   primaryAppShellReadyExpression,
-  probeCompletionAllowsContinuation,
+  probeCompletionDisposition,
   productExtensionRealUiFailureDiagnostics,
   requireCurrentRendererDocument,
   productExtensionDiagnosticsReady,
@@ -21,17 +23,164 @@ const {
   richContentFullyUnmounted,
   richContentInteractionScript,
   richContentInteractionsReady,
+  richContentProbeLifecycleEvidence,
   richContentOwnersReady,
   richContentRegistrationsReady,
   richContentUnmountDiagnostics,
   richContentUnmountRequested,
   richMessageProbeEventFile,
+  settleProbePollFailure,
   startRendererLifecycle,
   uiSurfaceInteractionReady,
   uiSurfaceProbeEventFile,
   waitForPrimaryUiReadiness,
   writeCurrentRendererDocumentDiagnostics,
 } = bootstrap;
+
+test("renderer JavaScript execution returns a settled result within its bound", async () => {
+  const calls = [];
+  const contents = {
+    executeJavaScript(source) {
+      calls.push(source);
+      return Promise.resolve(42);
+    },
+  };
+  assert.equal(
+    await executeRendererJavaScript(contents, "window.answer", 100),
+    42,
+  );
+  assert.deepEqual(calls, ["window.answer"]);
+});
+
+test("renderer JavaScript execution preserves an evaluation failure", async () => {
+  const failure = new RangeError("private renderer failure detail");
+  await assert.rejects(
+    executeRendererJavaScript(
+      { executeJavaScript: () => Promise.reject(failure) },
+      "window.failure",
+      100,
+    ),
+    (error) => error === failure,
+  );
+});
+
+test("renderer JavaScript execution bounds a pending evaluation", async () => {
+  await assert.rejects(
+    executeRendererJavaScript(
+      { executeJavaScript: () => new Promise(() => {}) },
+      "window.pending",
+      10,
+    ),
+    (error) =>
+      error?.name === "TimeoutError" &&
+      error.message === "Renderer JavaScript evaluation timed out",
+  );
+});
+
+test("a renderer evaluation rejection after timeout is handled", async () => {
+  let rejectEvaluation;
+  const evaluation = new Promise((_, reject) => {
+    rejectEvaluation = reject;
+  });
+  const unhandled = [];
+  const onUnhandled = (error) => unhandled.push(error);
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    await assert.rejects(
+      executeRendererJavaScript(
+        { executeJavaScript: () => evaluation },
+        "window.lateFailure",
+        10,
+      ),
+      { name: "TimeoutError" },
+    );
+    rejectEvaluation(new Error("private late renderer failure"));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(unhandled, []);
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+});
+
+test("renderer JavaScript execution validates its finite bound", async () => {
+  const contents = { executeJavaScript: () => Promise.resolve(true) };
+  await assert.rejects(
+    executeRendererJavaScript(contents, "true", 0),
+    /timeout must be a positive number/,
+  );
+  await assert.rejects(
+    executeRendererJavaScript(contents, "true", Number.POSITIVE_INFINITY),
+    /timeout must be a positive number/,
+  );
+  await assert.rejects(
+    executeRendererJavaScript(contents, null, 10),
+    /source must be a string/,
+  );
+});
+
+test("all bootstrap renderer evaluations use the bounded helper", () => {
+  const source = readFileSync(new URL("./bootstrap.cjs", import.meta.url), "utf8");
+  assert.equal(source.match(/contents\.executeJavaScript/g)?.length, 1);
+});
+
+test("the UI surface probe returns partial diagnostics within one total budget", () => {
+  const source = readFileSync(new URL("./bootstrap.cjs", import.meta.url), "utf8");
+  const start = source.indexOf("async function interactWithUiSurfaceProbe");
+  const end = source.indexOf("async function waitForPrimaryUiDocument", start);
+  const probe = source.slice(start, end);
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  assert.match(probe, /const probeDeadline = Date\.now\(\) \+ \$\{uiSurfaceProbeBudgetMilliseconds\}/);
+  assert.match(probe, /const stageDeadline = \(milliseconds\) =>/);
+  assert.equal(probe.match(/Date\.now\(\) \+/g)?.length, 2);
+  assert.match(probe, /uiSurfaceProbeBudgetMilliseconds \+ 10_000/);
+});
+
+test("rich-content probe lifecycle evidence uses only fixed values", () => {
+  const stages = [
+    "primary-readiness",
+    "primary-diagnostics",
+    "registration-readiness",
+    "mount-request",
+    "owner-render",
+    "interactions",
+    "unmount-request",
+    "unmount-owner-render",
+  ];
+  for (const stage of stages) {
+    assert.deepEqual(richContentProbeLifecycleEvidence(stage), { stage });
+    assert.deepEqual(richContentProbeLifecycleEvidence(stage, true), {
+      stage,
+      reason: "document-inactive",
+    });
+  }
+  assert.throws(
+    () => richContentProbeLifecycleEvidence("private thread title"),
+    /Unknown rich-content probe stage/,
+  );
+  assert.throws(
+    () => richContentProbeLifecycleEvidence("interactions", "private reason"),
+    /aborted state must be a boolean/,
+  );
+});
+
+test("a probe poll failure records terminal evidence before completion", () => {
+  const order = [];
+  const result = settleProbePollFailure(
+    new Error("private file failure"),
+    (error) => order.push(`record:${error.name}`),
+    (completed) => {
+      order.push(`finish:${completed}`);
+      return "settled";
+    },
+  );
+  assert.equal(result, "settled");
+  assert.deepEqual(order, ["record:Error", "finish:false"]);
+  assert.throws(
+    () => settleProbePollFailure(new Error("failure"), null, () => {}),
+    /failure handlers are required/,
+  );
+});
 
 const richFallbackSurfaces = [
   "assistantContentReference",
@@ -549,57 +698,21 @@ test("a replaced renderer document cannot write probe diagnostics", () => {
   assert.equal(writes, 2);
 });
 
-test("probe continuation waits for successful completion on the current document", async () => {
-  let resolveCompletion;
-  const completion = new Promise((resolve) => {
-    resolveCompletion = resolve;
-  });
-  let currentDocumentId = "document-a";
-  const contents = { isDestroyed: () => false };
-  const lifecycle = {
-    isCurrent: (candidate, documentId) =>
-      candidate === contents && documentId === currentDocumentId,
-  };
-  const document = { id: "document-a" };
-  let continued;
-  const result = probeCompletionAllowsContinuation(
-    completion,
-    lifecycle,
-    contents,
-    document,
-  ).then((value) => {
-    continued = value;
-    return value;
-  });
-
-  await Promise.resolve();
-  assert.equal(continued, undefined);
-  resolveCompletion(true);
-  assert.equal(await result, true);
-
-  currentDocumentId = "document-b";
+test("probe completion distinguishes continuation, abort, and recorded failure", () => {
+  assert.equal(probeCompletionDisposition(true, true, false), "continue");
+  assert.equal(probeCompletionDisposition(true, false, false), "aborted");
+  assert.equal(probeCompletionDisposition(false, false, false), "aborted");
   assert.equal(
-    await probeCompletionAllowsContinuation(
-      Promise.resolve(true),
-      lifecycle,
-      contents,
-      document,
-    ),
-    false,
+    probeCompletionDisposition(false, true, true),
+    "failed-recorded",
   );
-});
-
-test("probe continuation stops after an unsuccessful completion", async () => {
-  const contents = { isDestroyed: () => false };
-  const lifecycle = { isCurrent: () => true };
   assert.equal(
-    await probeCompletionAllowsContinuation(
-      Promise.resolve(false),
-      lifecycle,
-      contents,
-      { id: "document-a" },
-    ),
-    false,
+    probeCompletionDisposition(false, true, false),
+    "failed-unrecorded",
+  );
+  assert.throws(
+    () => probeCompletionDisposition(false, true, "private failure"),
+    /completion state must use booleans/,
   );
 });
 
