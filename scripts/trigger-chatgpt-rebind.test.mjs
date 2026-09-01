@@ -160,6 +160,112 @@ test("current issue events require the configured worker actor", () => {
   );
 });
 
+test("continuation ignores non-backtests and rejects a non-bot backtest", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "continue-current-test."));
+  try {
+    const gh = path.join(directory, "gh");
+    const log = path.join(directory, "gh.log");
+    await writeFile(
+      gh,
+      `#!/usr/bin/env node
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+fs.appendFileSync(process.env.GH_TEST_LOG, JSON.stringify(args) + "\\n");
+process.stdout.write(process.env.GH_TEST_ISSUE);
+`,
+    );
+    await chmod(gh, 0o755);
+    for (const request of [current, { ...current, mode: "correction" }]) {
+      const issue = {
+        number: 12,
+        title: issueTitle(request),
+        body: issueBody(request),
+        state: "closed",
+        labels: [{ name: "chatgpt-binding" }, { name: "success" }],
+        user: { login: "zats" },
+      };
+
+      execFileSync(
+        process.execPath,
+        [
+          path.join(import.meta.dirname, "trigger-chatgpt-rebind.mjs"),
+          "continue-batch",
+          "--repository",
+          "zats/repo",
+          "--issue-number",
+          "12",
+          "--outcome",
+          "success",
+        ],
+        {
+          env: {
+            ...process.env,
+            PATH: `${directory}:${process.env.PATH}`,
+            GH_TEST_ISSUE: JSON.stringify(issue),
+            GH_TEST_LOG: log,
+          },
+        },
+      );
+    }
+
+    const backtestRequest = {
+      ...current,
+      mode: "backtest",
+      snapshotSha256: "a".repeat(64),
+      batchId: batchA,
+      offset: 0,
+    };
+    const nonBotBacktestIssue = {
+      number: 12,
+      title: issueTitle(backtestRequest),
+      body: issueBody(backtestRequest),
+      state: "closed",
+      labels: [{ name: "chatgpt-binding" }, { name: "success" }],
+      user: { login: "zats" },
+    };
+    assert.throws(
+      () =>
+        execFileSync(
+          process.execPath,
+          [
+            path.join(import.meta.dirname, "trigger-chatgpt-rebind.mjs"),
+            "continue-batch",
+            "--repository",
+            "zats/repo",
+            "--issue-number",
+            "12",
+            "--outcome",
+            "success",
+          ],
+          {
+            env: {
+              ...process.env,
+              PATH: `${directory}:${process.env.PATH}`,
+              GH_TEST_ISSUE: JSON.stringify(nonBotBacktestIssue),
+              GH_TEST_LOG: log,
+            },
+          },
+        ),
+      (error) => {
+        assert.match(error.stderr.toString(), /Batch issue 12 is not bot-owned/);
+        return true;
+      },
+    );
+
+    const records = (await readFile(log, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    assert.deepEqual(records, [
+      ["api", "repos/zats/repo/issues/12"],
+      ["api", "repos/zats/repo/issues/12"],
+      ["api", "repos/zats/repo/issues/12"],
+    ]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("trusted repository dispatch can mark an exact failed issue retry", () => {
   const result = requestFromEvent("repository_dispatch", {
     action: "chatgpt-rebind",

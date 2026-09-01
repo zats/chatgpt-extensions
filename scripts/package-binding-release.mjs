@@ -80,7 +80,10 @@ export async function packageBindingRelease(options) {
       sourceSha,
       bindingPath,
     ],
-    { stdio: "inherit" },
+    {
+      stdio: "inherit",
+      env: { ...process.env, TZ: "UTC" },
+    },
   );
   const sha256 = crypto
     .createHash("sha256")

@@ -75,14 +75,17 @@ async function fixture(treeKind = "regular") {
 test("binding archive is deterministic for one exact source commit", async () => {
   const root = await fixture();
   const outputRoot = await mkdtemp(path.join(os.tmpdir(), "binding-release-output."));
+  const originalTimeZone = process.env.TZ;
   try {
     const source = git(root, "rev-parse", "HEAD");
+    process.env.TZ = "America/New_York";
     const first = await packageBindingRelease({
       repository: root,
       version: "26.1.2",
       source,
       output: path.join(outputRoot, "first"),
     });
+    process.env.TZ = "Asia/Tokyo";
     const second = await packageBindingRelease({
       repository: root,
       version: "26.1.2",
@@ -93,6 +96,8 @@ test("binding archive is deterministic for one exact source commit", async () =>
     assert.deepEqual(await readFile(first.archive), await readFile(second.archive));
     assert.equal(first.tag, "binding-26.1.2-v1.0.0");
   } finally {
+    if (originalTimeZone === undefined) delete process.env.TZ;
+    else process.env.TZ = originalTimeZone;
     await rm(root, { recursive: true, force: true });
     await rm(outputRoot, { recursive: true, force: true });
   }

@@ -473,11 +473,11 @@ async function continueBatch(repository, issueNumber, outcome) {
     throw new TypeError("Batch outcome must be success or failed");
   }
   const current = liveIssue(repository, issueNumber);
+  const validatedCurrent = validateIssue(current);
+  if (validatedCurrent.request.mode !== "backtest") return;
   if (current.user?.login !== "github-actions[bot]") {
     throw new Error(`Batch issue ${issueNumber} is not bot-owned`);
   }
-  const validatedCurrent = validateIssue(current);
-  if (validatedCurrent.request.mode !== "backtest") return;
   const metadata = metadataFromComments(
     issueComments(repository, issueNumber),
     issueNumber,
