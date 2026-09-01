@@ -186,9 +186,11 @@ test("generation uploads only encrypted bytes before separate trusted sanitizati
     /jq -er \.current "\$UNTRUSTED_WORKTREE\/runtime\/bindings\/index\.json"/,
   );
   const terminateAgent = value.slice(terminate, patch);
+  assert.match(terminateAgent, /for _ in 1 2 3 4 5 6 7 8 9 10; do/);
   assert.match(terminateAgent, /launchctl bootout "gui\/\$AGENT_UID"/);
   assert.match(terminateAgent, /launchctl bootout "user\/\$AGENT_UID"/);
   assert.match(terminateAgent, /pkill -KILL -u "\$AGENT_UID"/);
+  assert.match(terminateAgent, /pgrep -u "\$AGENT_UID"/);
   assert.match(terminateAgent, /ps -o pid=,ppid=,stat=,comm= -U "\$AGENT_UID"/);
   const retrySeedApply = value.slice(
     value.indexOf('if [[ -n "$seed_patch" ]]'),
@@ -206,9 +208,15 @@ test("generation uploads only encrypted bytes before separate trusted sanitizati
   assert.match(captureTermination, /steps\.isolation\.outcome == 'success'/);
   assert.match(captureTermination, /steps\.terminate-agent\.outcome == 'success'/);
   assert.doesNotMatch(captureTermination, /steps\.raw-patch\.outcome == 'success'/);
+  assert.match(captureTermination, /for _ in 1 2 3 4 5 6 7 8 9 10; do/);
   assert.match(captureTermination, /launchctl bootout "gui\/\$AGENT_UID"/);
   assert.match(captureTermination, /launchctl bootout "user\/\$AGENT_UID"/);
   assert.match(captureTermination, /pkill -KILL -u "\$AGENT_UID"/);
+  assert.match(captureTermination, /pgrep -u "\$AGENT_UID"/);
+  assert.match(
+    captureTermination,
+    /ps -o pid=,ppid=,stat=,comm= -U "\$AGENT_UID"/,
+  );
   const authHandoff = value.slice(
     value.indexOf("id: agent-auth-handoff"),
     value.indexOf("name: Upload encrypted agent authentication handoff"),
