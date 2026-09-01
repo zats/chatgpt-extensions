@@ -81,6 +81,16 @@ test("issue validation rejects a title or body mismatch", () => {
     () => validateIssue(issue, { ...current, mode: "correction" }),
     /does not match/,
   );
+  const reordered = {
+    downloadEdSignature: current.downloadEdSignature,
+    downloadLength: current.downloadLength,
+    downloadUrl: current.downloadUrl,
+    appBuild: current.appBuild,
+    version: current.version,
+    mode: current.mode,
+    schema: current.schema,
+  };
+  assert.doesNotThrow(() => validateIssue(issue, reordered));
 });
 
 test("pending issue and trusted exact retry events validate", () => {

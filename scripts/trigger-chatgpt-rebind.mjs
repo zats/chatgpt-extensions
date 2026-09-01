@@ -6,6 +6,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 
 import { expectedDownloadUrl } from "./resolve-appcast-versions.mjs";
 
@@ -115,7 +116,7 @@ export function validateIssue(issue, expectedRequest) {
   }
   if (expectedRequest !== undefined) {
     const expected = validateRequest(expectedRequest);
-    if (JSON.stringify(request) !== JSON.stringify(expected)) {
+    if (!isDeepStrictEqual(request, expected)) {
       throw new TypeError("Rebind issue body does not match the requested build");
     }
   }
