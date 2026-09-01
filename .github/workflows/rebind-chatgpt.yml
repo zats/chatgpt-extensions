@@ -716,7 +716,8 @@ jobs:
           {
             echo "source=fresh"
             echo "diagnostics=none"
-            echo "live-result=absent"
+            echo "historical-live-result=absent"
+            echo "historical-live-stage=absent"
           } >> "$GITHUB_OUTPUT"
           [[ "$RETRY" == "true" ]] || exit 0
 
@@ -773,10 +774,18 @@ jobs:
               sudo /usr/bin/install -m 600 \
                 "$retry_root/artifact/change-validation.json" \
                 "$diagnostics/change-validation.json"
-              gate_artifact_id="$(jq -r \
-                --arg name "precommit-version-gate-$VERSION-$PREVIOUS_RUN_ID-$patch_attempt" \
-                '[.artifacts[] | select(.expired == false and .name == $name)] | last | .id // empty' \
+              candidate_gate_name="version-gate-candidate-$VERSION-$PREVIOUS_RUN_ID-$patch_attempt"
+              precommit_gate_name="precommit-version-gate-$VERSION-$PREVIOUS_RUN_ID-$patch_attempt"
+              gate_record="$(jq -c \
+                --arg candidate "$candidate_gate_name" \
+                --arg precommit "$precommit_gate_name" '
+                  ([.artifacts[] | select(.expired == false and .name == $candidate)] | last) //
+                  ([.artifacts[] | select(.expired == false and .name == $precommit)] | last) //
+                  {}
+                ' \
                 "$retry_root/artifacts.json")"
+              gate_artifact_id="$(jq -r '.id // empty' <<< "$gate_record")"
+              gate_artifact_name="$(jq -r '.name // empty' <<< "$gate_record")"
               if [[ -n "$gate_artifact_id" ]]; then
                 gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$gate_artifact_id/zip" \
                   > "$retry_root/live-gate.zip"
@@ -802,13 +811,24 @@ jobs:
                   (.status == "passed" or .status == "failed")
                 ' "$live_gate" >/dev/null
                 live_status="$(jq -er .status "$live_gate")"
+                if [[ "$gate_artifact_name" == "$candidate_gate_name" ]]; then
+                  live_stage=candidate
+                elif [[ "$gate_artifact_name" == "$precommit_gate_name" ]]; then
+                  live_stage=precommit
+                else
+                  echo "Retry live-gate artifact has an invalid stage identity" >&2
+                  exit 1
+                fi
                 node "$RUNNER_TEMP/trusted-automation/scan-patch-credentials.mjs" \
                   --candidate "$live_gate" \
                   --secret "$RUNNER_TEMP/initial-agent-auth.json"
                 sudo /usr/bin/install -m 600 \
                   "$live_gate" \
                   "$diagnostics/version-gate.json"
-                echo "live-result=$live_status" >> "$GITHUB_OUTPUT"
+                {
+                  echo "historical-live-result=$live_status"
+                  echo "historical-live-stage=$live_stage"
+                } >> "$GITHUB_OUTPUT"
               fi
               sudo /usr/sbin/chown -R "$AGENT_UID:20" "$diagnostics"
               echo "diagnostics=$diagnostics" >> "$GITHUB_OUTPUT"
@@ -902,7 +922,8 @@ jobs:
           ELECTRON_VERSION: ${{ steps.research.outputs.electron }}
           MODE: ${{ needs.request.outputs.mode }}
           RETRY_DIAGNOSTICS: ${{ steps.retry-seed.outputs.diagnostics }}
-          RETRY_LIVE_RESULT: ${{ steps.retry-seed.outputs.live-result }}
+          RETRY_HISTORICAL_LIVE_RESULT: ${{ steps.retry-seed.outputs.historical-live-result }}
+          RETRY_HISTORICAL_LIVE_STAGE: ${{ steps.retry-seed.outputs.historical-live-stage }}
           RETRY_SEED_SOURCE: ${{ steps.retry-seed.outputs.source }}
           RESEARCH_DIRECTORY: ${{ steps.research.outputs.directory }}
           UNTRUSTED_HOME: ${{ steps.isolation.outputs.home }}
@@ -914,15 +935,19 @@ jobs:
           else
             reference_version="$(jq -er .current "$GITHUB_WORKSPACE/runtime/bindings/index.json")"
           fi
-          case "$RETRY_LIVE_RESULT" in
+          case "$RETRY_HISTORICAL_LIVE_RESULT" in
             failed)
-              live_guidance="The prior live gate failed. Diagnose that failure before you repeat static work."
+              live_guidance="The historical $RETRY_HISTORICAL_LIVE_STAGE live gate failed for the downloaded prior diagnostics patch. Diagnose that failure before you repeat static work. This result does not validate or describe a different candidate or fresh seed."
               ;;
             passed)
-              live_guidance="The prior live gate passed. Preserve it as completed evidence and investigate only the later failure."
+              live_guidance="The historical $RETRY_HISTORICAL_LIVE_STAGE live gate passed for the downloaded prior diagnostics patch. Preserve it only as completed evidence for that patch and investigate the later failure. This result does not validate or describe a different candidate or fresh seed."
               ;;
             absent)
-              live_guidance="No prior live-gate result is available. Do not infer that a live gate passed or failed."
+              [[ "$RETRY_HISTORICAL_LIVE_STAGE" == "absent" ]] || {
+                echo "Retry historical live-gate stage is invalid" >&2
+                exit 1
+              }
+              live_guidance="No historical live-gate result is available. Do not infer that a prior or selected seed passed or failed a live gate."
               ;;
             *)
               echo "Retry live-gate result is invalid" >&2

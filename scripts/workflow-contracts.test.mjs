@@ -398,21 +398,34 @@ test("a binding retry receives its prior public live failure and re-derives mini
     retry,
     /precommit-version-gate-\$VERSION-\$PREVIOUS_RUN_ID-\$patch_attempt/,
   );
-  assert.match(retry, /select\(\.expired == false and \.name == \$name\)/);
+  assert.match(
+    retry,
+    /version-gate-candidate-\$VERSION-\$PREVIOUS_RUN_ID-\$patch_attempt/,
+  );
+  assert.match(
+    retry,
+    /\(\[\.artifacts\[\] \| select\(\.expired == false and \.name == \$candidate\)\] \| last\) \/\//,
+  );
+  assert.match(
+    retry,
+    /\(\[\.artifacts\[\] \| select\(\.expired == false and \.name == \$precommit\)\] \| last\) \/\//,
+  );
   assert.match(retry, /printf '%s\\n' version-gate\.json/);
   assert.match(retry, /\.schemaVersion == 1/);
   assert.match(retry, /\.phase == "live"/);
   assert.match(retry, /scan-patch-credentials\.mjs/);
   assert.match(retry, /\$diagnostics\/version-gate\.json/);
-  assert.match(retry, /live-result=\$live_status/);
+  assert.match(retry, /historical-live-result=\$live_status/);
+  assert.match(retry, /historical-live-stage=\$live_stage/);
   assert.match(
     rebind,
     /Re-derive every minified module and export from target-build behavior/,
   );
-  assert.match(rebind, /case "\$RETRY_LIVE_RESULT" in/);
-  assert.match(rebind, /The prior live gate failed/);
-  assert.match(rebind, /The prior live gate passed/);
-  assert.match(rebind, /No prior live-gate result is available/);
+  assert.match(rebind, /case "\$RETRY_HISTORICAL_LIVE_RESULT" in/);
+  assert.match(rebind, /historical \$RETRY_HISTORICAL_LIVE_STAGE live gate failed/);
+  assert.match(rebind, /historical \$RETRY_HISTORICAL_LIVE_STAGE live gate passed/);
+  assert.match(rebind, /This result does not validate or describe a different candidate or fresh seed/);
+  assert.match(rebind, /No historical live-gate result is available/);
 });
 
 test("test authentication exists only after no-secret static tests and live runs as another UID", async () => {
