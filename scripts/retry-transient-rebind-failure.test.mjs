@@ -16,6 +16,33 @@ test("only bounded runner or service failures retry", () => {
   );
   assert.equal(
     shouldRetryTransientFailure(run, [{}], [
+      {
+        annotation_level: "failure",
+        message: "Process completed with exit code 1430.",
+      },
+    ]),
+    false,
+  );
+  assert.equal(
+    shouldRetryTransientFailure(run, [{}], [
+      {
+        annotation_level: "failure",
+        message: "Process completed with exit code 143.\n",
+      },
+    ]),
+    false,
+  );
+  assert.equal(
+    shouldRetryTransientFailure(run, [{}], [
+      {
+        annotation_level: "failure",
+        message: "Process completed with exit code 143.",
+      },
+    ]),
+    true,
+  );
+  assert.equal(
+    shouldRetryTransientFailure(run, [{}], [
       { annotation_level: "failure", message: "A product validation test failed" },
     ]),
     false,
@@ -24,7 +51,7 @@ test("only bounded runner or service failures retry", () => {
     shouldRetryTransientFailure({ ...run, run_attempt: 2 }, [{}], [
       {
         annotation_level: "failure",
-        message: "The hosted runner lost communication with the server.",
+        message: "Process completed with exit code 143.",
       },
     ]),
     false,

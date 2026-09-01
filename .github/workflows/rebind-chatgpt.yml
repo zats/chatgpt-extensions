@@ -326,6 +326,10 @@ jobs:
         with:
           ref: ${{ needs.request.outputs.base-sha }}
           fetch-depth: 0
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
       - name: Verify or publish the exact immutable binding release
         id: publish
         env:
@@ -1988,6 +1992,10 @@ jobs:
         with:
           ref: ${{ needs.land.outputs.head-sha }}
           fetch-depth: 0
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
       - name: Package and publish immutable binding
         id: publish
         env:
@@ -2030,6 +2038,10 @@ jobs:
         with:
           ref: ${{ needs.request.outputs.base-sha }}
           fetch-depth: 0
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
       - name: Repair immutable binding publication
         id: publish
         env:

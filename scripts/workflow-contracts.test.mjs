@@ -631,6 +631,19 @@ test("recovery and existing publication run current automation against historica
   }
 });
 
+test("all immutable publication modes pin the repository Node runtime", async () => {
+  const value = await source("rebind-chatgpt.yml");
+  const jobs = [
+    value.slice(value.indexOf("  existing-publish:"), value.indexOf("  prepare-promotion:")),
+    value.slice(value.indexOf("  publish:"), value.indexOf("  recovery-publish:")),
+    value.slice(value.indexOf("  recovery-publish:"), value.indexOf("  completed-auth-artifacts:")),
+  ];
+  for (const job of jobs) {
+    assert.match(job, /uses: actions\/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020/);
+    assert.match(job, /node-version: 24/);
+  }
+});
+
 test("current promotion preserves the immutable binding source and gates the selector commit", async () => {
   const value = await source("rebind-chatgpt.yml");
   assert.match(value, /binding-source-sha:/);

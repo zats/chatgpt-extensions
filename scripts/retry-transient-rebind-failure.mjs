@@ -4,7 +4,8 @@ import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 
 const transientAnnotation =
-  /(?:hosted runner lost communication|runner received a shutdown signal|internal runner error|github actions service unavailable)/i;
+  /(?:hosted runner lost communication|runner (?:has )?received a shutdown signal|internal runner error|github actions service unavailable)/i;
+const runnerTerminationAnnotation = "Process completed with exit code 143.";
 const freshBaseAnnotation = /^chatgpt-rebind-fresh-base-required$/;
 
 export function shouldRetryTransientFailure(run, jobs, annotations) {
@@ -23,6 +24,7 @@ export function shouldRetryTransientFailure(run, jobs, annotations) {
     (annotation) =>
       annotation?.annotation_level === "failure" &&
       (transientAnnotation.test(annotation.message ?? "") ||
+        annotation.message === runnerTerminationAnnotation ||
         freshBaseAnnotation.test(annotation.message ?? "")),
   );
 }
