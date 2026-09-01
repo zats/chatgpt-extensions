@@ -10,8 +10,49 @@ import {
   createGateEnvironment,
   parseStartCommand,
   safeFailure,
+  safeRichProbeReadiness,
   summarizeLauncherResult,
 } from "./run-version-gate.mjs";
+
+function completeRichProbeReadiness() {
+  return {
+    stage: "interacted",
+    mounted: true,
+    registrations: {
+      assistantDirective: true,
+      assistantContentReference: true,
+      assistantCodeBlock: true,
+      conversationItem: true,
+    },
+    owners: {
+      assistantDirective: true,
+      assistantContentReference: true,
+      assistantMarkdown: true,
+      assistantCodeBlock: true,
+      localConversationItem: true,
+      cloudConversationItem: true,
+      driftFree: true,
+      cloudOwnerReady: true,
+    },
+    fallbacks: {
+      assistantDirective: true,
+      assistantContentReference: true,
+      assistantCodeBlock: true,
+      conversationItemLocal: true,
+      conversationItemCloud: true,
+    },
+    interactions: {
+      directive: true,
+      directiveContainer: true,
+      contentReference: true,
+      codeBlock: true,
+      streamingCodeBlock: true,
+      conversationItem: true,
+      groupedConversationItem: true,
+      cloudConversationItem: true,
+    },
+  };
+}
 
 test("default start command calls the repository start script with Node", () => {
   const result = parseStartCommand(undefined);
@@ -246,6 +287,33 @@ test("launcher result requires exact binding, every activation phase, and live e
   );
 });
 
+test("rich probe readiness accepts only the exact public boolean shape", () => {
+  const readiness = completeRichProbeReadiness();
+  assert.deepEqual(safeRichProbeReadiness(readiness), readiness);
+  assert.equal(
+    safeRichProbeReadiness({ ...readiness, stage: "private-stage" }),
+    undefined,
+  );
+  assert.equal(
+    safeRichProbeReadiness({
+      ...readiness,
+      interactions: { ...readiness.interactions, directive: "true" },
+    }),
+    undefined,
+  );
+  assert.equal(
+    safeRichProbeReadiness({ ...readiness, privateThreadTitle: "private" }),
+    undefined,
+  );
+  assert.equal(
+    safeRichProbeReadiness({
+      ...readiness,
+      owners: { ...readiness.owners, privateAccount: false },
+    }),
+    undefined,
+  );
+});
+
 test("public version-gate output strips launcher evidence and private error names", () => {
   const privateValue = "PrivateThreadTitle123";
   const value = summarizeLauncherResult(
@@ -283,6 +351,7 @@ test("public version-gate output strips launcher evidence and private error name
         privateValue,
         "code-block.mount",
       ],
+      richProbeReadiness: completeRichProbeReadiness(),
       extra: privateValue,
     },
     { activationGates: ["activation:one:renderer"] },
@@ -296,6 +365,7 @@ test("public version-gate output strips launcher evidence and private error name
     failure: { code: "launcher-gate-failed", errorName: "Error" },
     runtimeEventCounts: { "rich-content-probe-skipped": 2 },
     richEventSequence: ["extension.activate", "code-block.mount"],
+    richProbeReadiness: completeRichProbeReadiness(),
   });
   assert.doesNotMatch(JSON.stringify(value), new RegExp(privateValue));
   assert.deepEqual(safeFailure("live", { name: privateValue }), {
@@ -408,6 +478,7 @@ const failed = {
     { name: "unknown-gate", status: "failed", evidence: { title: privateValue } },
   ],
   failure: { code: privateValue, errorName: privateValue, message: privateValue },
+  richProbeReadiness: ${JSON.stringify(completeRichProbeReadiness())},
   extra: privateValue,
 };
 fs.writeFileSync(resultFile, JSON.stringify(${JSON.stringify(expectedStatus)} === "passed" ? passed : failed));
@@ -442,7 +513,12 @@ if (${JSON.stringify(expectedStatus)} === "failed") process.exitCode = 1;
       assert.equal(command.status, expectedStatus === "passed" ? 0 : 1);
       const serialized = fs.readFileSync(result, "utf8");
       assert.doesNotMatch(serialized, new RegExp(privateValue));
-      assert.equal(JSON.parse(serialized).status, expectedStatus);
+      const parsed = JSON.parse(serialized);
+      assert.equal(parsed.status, expectedStatus);
+      assert.deepEqual(
+        parsed.launcher?.richProbeReadiness,
+        expectedStatus === "failed" ? completeRichProbeReadiness() : undefined,
+      );
     }
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

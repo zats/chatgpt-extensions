@@ -19,6 +19,7 @@ import {
   readBoundedJsonFile,
   readRuntimeRecords,
   readSession,
+  rendererDocumentActivationReady,
   runtimeFailures,
   sanitizedLaunchEnvironment,
   sanitizedStockLaunchEnvironment,
@@ -38,6 +39,7 @@ import {
   assertRichProbeLifecycle,
   richProbeDisposalEvents,
   richProbeInteractionEvents,
+  summarizeRichProbeReadiness,
 } from "./rich-message-gate.mjs";
 
 const defaultApp = "/Applications/ChatGPT.app";
@@ -165,6 +167,84 @@ export function summarizeRichProbeEventSequence(events) {
       )
       .slice(0, 256),
   );
+}
+
+export function summarizeGateRichProbeReadiness(
+  records,
+  diagnosticCandidates = [],
+  rendererDocumentId,
+) {
+  const runtimeRecord = (Array.isArray(records) ? records : []).findLast(
+    (record) =>
+      [
+        "rich-content-probe-failed",
+        "rich-content-probe-mounted",
+        "rich-content-probe-unmount-failed",
+        "rich-content-probe-unmounted",
+      ].includes(record?.event) &&
+      (rendererDocumentId === undefined ||
+        record?.diagnostics?.rendererDocumentId === rendererDocumentId),
+  );
+  for (const diagnostics of [
+    runtimeRecord?.diagnostics,
+    ...(Array.isArray(diagnosticCandidates) ? diagnosticCandidates : []),
+  ]) {
+    if (
+      rendererDocumentId !== undefined &&
+      diagnostics?.rendererDocumentId !== rendererDocumentId
+    ) {
+      continue;
+    }
+    const readiness = summarizeRichProbeReadiness(diagnostics);
+    if (readiness) return readiness;
+  }
+  return undefined;
+}
+
+export function assertProbeDocumentIdentity(
+  diagnostics,
+  rendererDocumentId,
+  description,
+) {
+  if (
+    typeof rendererDocumentId !== "string" ||
+    rendererDocumentId.length === 0 ||
+    diagnostics?.rendererDocumentId !== rendererDocumentId
+  ) {
+    throw new Error(`${description} came from a different renderer document`);
+  }
+  return diagnostics;
+}
+
+export async function waitForCurrentRendererDiagnostics(
+  file,
+  description,
+  logDirectory,
+  identities,
+  timeoutMilliseconds = 15_000,
+) {
+  const deadline = Date.now() + timeoutMilliseconds;
+  while (Date.now() < deadline) {
+    const diagnostics = await waitForJson(
+      file,
+      description,
+      Math.max(1, deadline - Date.now()),
+    );
+    const documentId = diagnostics?.rendererDocumentId;
+    if (
+      typeof documentId === "string" &&
+      documentId.length > 0 &&
+      rendererDocumentActivationReady(
+        readRuntimeRecords(logDirectory),
+        identities,
+        documentId,
+      )
+    ) {
+      return diagnostics;
+    }
+    await sleep(50);
+  }
+  throw new Error(`${description} did not belong to an active renderer document`);
 }
 
 export function summarizeNativeMainEvidence(value) {
@@ -736,6 +816,32 @@ export function assertUiSurfaceEvents(value) {
   }
 }
 
+export function uiSurfaceInteractionReady(result) {
+  if (result?.kind === "render") {
+    return (
+      result.ownerFound === true &&
+      result.invalidateFound === true &&
+      result.invalidateClicked === true &&
+      result.oldDisconnected === true &&
+      result.replaced === true &&
+      result.actionFound === true &&
+      result.actionClicked === true
+    );
+  }
+  if (result?.kind === "dismiss") {
+    return (
+      result.found === true &&
+      result.clicked === true &&
+      result.removed === true
+    );
+  }
+  return (
+    result?.found === true &&
+    result.clicked === true &&
+    result.changed === true
+  );
+}
+
 export function assertUiSurfaceDiagnostics(value) {
   const results = value?.results;
   const states = value?.states;
@@ -766,29 +872,7 @@ export function assertUiSurfaceDiagnostics(value) {
     }
   }
   for (const result of Array.isArray(results) ? results : []) {
-    if (result?.kind === "render") {
-      if (
-        result.ownerFound !== true ||
-        result.invalidateFound !== true ||
-        result.invalidateClicked !== true ||
-        result.oldDisconnected !== true ||
-        result.replaced !== true ||
-        result.actionFound !== true ||
-        result.actionClicked !== true
-      ) missing.push(`${result.state}.${result.name}`);
-    } else if (result?.kind === "dismiss") {
-      if (
-        result.found !== true ||
-        result.clicked !== true ||
-        result.oldDisconnected !== true
-      ) missing.push(`${result.state}.${result.name}`);
-    } else if (
-      result?.found !== true ||
-      result?.clicked !== true ||
-      (result.oldDisconnected !== true &&
-        result.replaced !== true &&
-        result.changed !== true)
-    ) {
+    if (!uiSurfaceInteractionReady(result)) {
       missing.push(`${result?.state}.${result?.name}`);
     }
   }
@@ -805,33 +889,9 @@ export function uiSurfaceDiagnosticFailureCode(value) {
   if (!Array.isArray(results) || results.length !== 23) {
     return "ui-surface-diagnostics";
   }
-  const incomplete = results.find((result) => {
-    if (result?.kind === "render") {
-      return (
-        result.ownerFound !== true ||
-        result.invalidateFound !== true ||
-        result.invalidateClicked !== true ||
-        result.oldDisconnected !== true ||
-        result.replaced !== true ||
-        result.actionFound !== true ||
-        result.actionClicked !== true
-      );
-    }
-    if (result?.kind === "dismiss") {
-      return (
-        result.found !== true ||
-        result.clicked !== true ||
-        result.oldDisconnected !== true
-      );
-    }
-    return (
-      result?.found !== true ||
-      result?.clicked !== true ||
-      (result.oldDisconnected !== true &&
-        result.replaced !== true &&
-        result.changed !== true)
-    );
-  });
+  const incomplete = results.find(
+    (result) => !uiSurfaceInteractionReady(result),
+  );
   if (incomplete) {
     if (incomplete.name === "suggestion") return "ui-surface-suggestion";
     if (incomplete.name?.startsWith("announcement-")) {
@@ -1182,6 +1242,9 @@ async function runGate(options) {
   let runtimeEventCounts;
   let richEventFile;
   let richEventSequence;
+  let richProbeReadiness;
+  let richDiagnostics;
+  let unmountDiagnostics;
   let failure;
   let failureCode;
   let activeGate = "run-gate";
@@ -1312,12 +1375,26 @@ async function runGate(options) {
     });
 
     activeGate = "rich-message-diagnostics";
-    const richDiagnostics = await waitForJson(
+    richDiagnostics = await waitForCurrentRendererDiagnostics(
       path.join(session, "rich-content-diagnostics.json"),
       "rich-content interaction diagnostics",
+      layout.logDirectory,
+      identities,
       options.timeoutMilliseconds,
     );
     assertRichContentDiagnostics(richDiagnostics);
+    const probeDocumentId = richDiagnostics.rendererDocumentId;
+    if (
+      !rendererDocumentActivationReady(
+        readRuntimeRecords(layout.logDirectory),
+        identities,
+        probeDocumentId,
+      )
+    ) {
+      throw new Error(
+        "The Rich Message Probe document did not activate every renderer entry",
+      );
+    }
     const eventDirectory = path.join(
       layout.storageDirectory,
       "rich-message-probe",
@@ -1330,15 +1407,29 @@ async function runGate(options) {
       false,
       richEventFile,
     );
-    fs.writeFileSync(path.join(session, "rich-content-unmount-request"), "unmount\n", { mode: 0o600 });
+    fs.writeFileSync(
+      path.join(session, "rich-content-unmount-request"),
+      `${probeDocumentId}\n`,
+      { mode: 0o600 },
+    );
     activeGate = "rich-message-unmount-events";
     richEvents = await waitForRichEventLog(eventDirectory, true, richEvents.file);
     activeGate = "rich-message-unmount-diagnostics";
-    const unmountDiagnostics = await waitForJson(
+    unmountDiagnostics = await waitForJson(
       path.join(session, "rich-content-unmount-diagnostics.json"),
       "rich-content unmount diagnostics",
       options.timeoutMilliseconds,
     );
+    assertProbeDocumentIdentity(
+      unmountDiagnostics,
+      probeDocumentId,
+      "Rich Message Probe unmount diagnostics",
+    );
+    if (unmountDiagnostics.eventFile !== richDiagnostics.eventFile) {
+      throw new Error(
+        "Rich Message Probe unmount diagnostics used a different event file",
+      );
+    }
     assertRichContentDiagnostics(unmountDiagnostics);
     assertRichContentUnmountDiagnostics(unmountDiagnostics);
     gates.push({
@@ -1355,6 +1446,11 @@ async function runGate(options) {
       path.join(session, "ui-surface-diagnostics.json"),
       "UI surface interaction diagnostics",
       options.timeoutMilliseconds,
+    );
+    assertProbeDocumentIdentity(
+      uiDiagnostics,
+      probeDocumentId,
+      "UI Surface Probe diagnostics",
     );
     activeGate = uiSurfaceDiagnosticFailureCode(uiDiagnostics);
     assertUiSurfaceDiagnostics(uiDiagnostics);
@@ -1379,6 +1475,11 @@ async function runGate(options) {
       "product extension diagnostics",
       options.timeoutMilliseconds,
     );
+    assertProbeDocumentIdentity(
+      productDiagnostics,
+      probeDocumentId,
+      "Product extension diagnostics",
+    );
     assertProductExtensionDiagnostics(productDiagnostics);
     gates.push({
       name: "product-extension-live-interactions",
@@ -1391,6 +1492,11 @@ async function runGate(options) {
       path.join(session, "product-extension-real-ui-diagnostics.json"),
       "real product extension UI diagnostics",
       options.timeoutMilliseconds,
+    );
+    assertProbeDocumentIdentity(
+      productRealUiDiagnostics,
+      probeDocumentId,
+      "Real product extension UI diagnostics",
     );
     assertProductExtensionRealUiDiagnostics(productRealUiDiagnostics);
     gates.push({
@@ -1411,9 +1517,12 @@ async function runGate(options) {
     failure = error;
     failureCode = activeGate;
     if (layout) {
-      runtimeEventCounts = summarizeGateRuntimeEvents(
-        readRuntimeRecords(layout.logDirectory),
-      );
+      const runtimeRecords = readRuntimeRecords(layout.logDirectory);
+      runtimeEventCounts = summarizeGateRuntimeEvents(runtimeRecords);
+      richProbeReadiness = summarizeGateRichProbeReadiness(runtimeRecords, [
+        unmountDiagnostics,
+        richDiagnostics,
+      ], richDiagnostics?.rendererDocumentId);
     }
     if (richEventFile) {
       try {
@@ -1483,6 +1592,9 @@ async function runGate(options) {
         : {}),
       ...(failure && richEventSequence
         ? { richEventSequence }
+        : {}),
+      ...(failure && richProbeReadiness
+        ? { richProbeReadiness }
         : {}),
     };
     writeJsonAtomic(options.result, result);

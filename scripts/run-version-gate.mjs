@@ -103,6 +103,47 @@ const safeRichProbeEventNames = new Set([
   ...richProbeInteractionEvents,
   ...richProbeDisposalEvents,
 ]);
+const safeRichProbeStages = new Set([
+  "registration-readiness",
+  "owner-render",
+  "mounted",
+  "interacted",
+]);
+const safeRichProbeGroupKeys = Object.freeze({
+  registrations: Object.freeze([
+    "assistantDirective",
+    "assistantContentReference",
+    "assistantCodeBlock",
+    "conversationItem",
+  ]),
+  owners: Object.freeze([
+    "assistantDirective",
+    "assistantContentReference",
+    "assistantMarkdown",
+    "assistantCodeBlock",
+    "localConversationItem",
+    "cloudConversationItem",
+    "driftFree",
+    "cloudOwnerReady",
+  ]),
+  fallbacks: Object.freeze([
+    "assistantDirective",
+    "assistantContentReference",
+    "assistantCodeBlock",
+    "conversationItemLocal",
+    "conversationItemCloud",
+  ]),
+  interactions: Object.freeze([
+    "directive",
+    "directiveContainer",
+    "contentReference",
+    "codeBlock",
+    "streamingCodeBlock",
+    "conversationItem",
+    "groupedConversationItem",
+    "cloudConversationItem",
+  ]),
+});
 const maximumDiagnosticJsonBytes = 10 * 1024 * 1024;
 const maximumMetadataJsonBytes = 1024 * 1024;
 
@@ -150,6 +191,67 @@ function safeRichProbeEventSequence(value) {
       )
       .slice(0, 256),
   );
+}
+
+function exactBooleanMap(value, keys) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const actualKeys = Object.keys(value).sort();
+  const expectedKeys = [...keys].sort();
+  if (
+    actualKeys.length !== expectedKeys.length ||
+    actualKeys.some((key, index) => key !== expectedKeys[index]) ||
+    keys.some((key) => typeof value[key] !== "boolean")
+  ) {
+    return undefined;
+  }
+  return Object.freeze(Object.fromEntries(keys.map((key) => [key, value[key]])));
+}
+
+export function safeRichProbeReadiness(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const topLevelKeys = [
+    "stage",
+    "mounted",
+    "registrations",
+    "owners",
+    "fallbacks",
+    "interactions",
+  ];
+  if (
+    Object.keys(value).sort().join("\0") !== [...topLevelKeys].sort().join("\0") ||
+    !safeRichProbeStages.has(value.stage) ||
+    typeof value.mounted !== "boolean"
+  ) {
+    return undefined;
+  }
+  const registrations = exactBooleanMap(
+    value.registrations,
+    safeRichProbeGroupKeys.registrations,
+  );
+  const owners = exactBooleanMap(value.owners, safeRichProbeGroupKeys.owners);
+  const fallbacks = exactBooleanMap(
+    value.fallbacks,
+    safeRichProbeGroupKeys.fallbacks,
+  );
+  const interactions = exactBooleanMap(
+    value.interactions,
+    safeRichProbeGroupKeys.interactions,
+  );
+  if (!registrations || !owners || !fallbacks || !interactions) {
+    return undefined;
+  }
+  return Object.freeze({
+    stage: value.stage,
+    mounted: value.mounted,
+    registrations,
+    owners,
+    fallbacks,
+    interactions,
+  });
 }
 
 function summarizedPassedGateEvidence(name, evidence, expectations) {
@@ -355,6 +457,9 @@ export function summarizeLauncherResult(value, expectations = {}) {
   const richEventSequence = safeRichProbeEventSequence(
     value?.richEventSequence,
   );
+  const richProbeReadiness = safeRichProbeReadiness(
+    value?.richProbeReadiness,
+  );
   return Object.freeze({
     status: value?.status === "passed" ? "passed" : "failed",
     gates: Object.freeze(
@@ -391,6 +496,7 @@ export function summarizeLauncherResult(value, expectations = {}) {
           ...(richEventSequence.length > 0
             ? { richEventSequence }
             : {}),
+          ...(richProbeReadiness ? { richProbeReadiness } : {}),
         }),
   });
 }

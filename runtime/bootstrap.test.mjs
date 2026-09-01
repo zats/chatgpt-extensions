@@ -10,6 +10,7 @@ const {
   isCurrentRendererDocument,
   primaryAppShellReadyExpression,
   probeCompletionAllowsContinuation,
+  productExtensionRealUiFailureDiagnostics,
   requireCurrentRendererDocument,
   productExtensionDiagnosticsReady,
   productExtensionRealUiDiagnosticsReady,
@@ -17,12 +18,15 @@ const {
   rendererHostReadyExpression,
   richContentFallbacksReady,
   richContentFullyUnmounted,
+  richContentInteractionScript,
   richContentInteractionsReady,
   richContentOwnersReady,
   richContentRegistrationsReady,
   richContentUnmountDiagnostics,
+  richContentUnmountRequested,
   richMessageProbeEventFile,
   startRendererLifecycle,
+  uiSurfaceInteractionReady,
   uiSurfaceProbeEventFile,
   writeCurrentRendererDocumentDiagnostics,
 } = bootstrap;
@@ -109,6 +113,7 @@ function completeProductExtensionRealUiDiagnostics() {
     coloredAndUncoloredTitlesAligned: true,
   };
   return {
+    rendererDocumentId: "document:test-renderer",
     realDom: true,
     thread: {
       scope: "execution",
@@ -265,6 +270,7 @@ test("real product diagnostic redaction preserves the raw validation result", ()
   const diagnostics = completeProductExtensionRealUiDiagnostics();
   const safe = sanitizeProductExtensionRealUiDiagnostics(diagnostics);
   assert.equal(safe.validationPassed, true);
+  assert.equal(safe.rendererDocumentId, "document:test-renderer");
   assert.equal(safe.thread.hostId, "redacted-host");
   assert.equal(safe.thread.threadId, "redacted-thread");
   assert.equal(safe.thread.title, "redacted-title");
@@ -300,6 +306,20 @@ test("real product diagnostic redaction preserves the raw validation result", ()
   assert.doesNotMatch(JSON.stringify(privateSafe), new RegExp(privateValue));
 });
 
+test("real product UI failure diagnostics keep their renderer document", () => {
+  assert.deepEqual(
+    productExtensionRealUiFailureDiagnostics(
+      "document:real-ui-failure",
+      new TypeError("private failure detail"),
+    ),
+    {
+      rendererDocumentId: "document:real-ui-failure",
+      validationPassed: false,
+      errorName: "TypeError",
+    },
+  );
+});
+
 test("one primary renderer document owns the full live-probe suite", () => {
   const claim = createPrimaryDocumentClaim();
   assert.equal(claim.claim("auxiliary-document", false), false);
@@ -312,6 +332,21 @@ test("one primary renderer document owns the full live-probe suite", () => {
   assert.equal(claim.release("document-a"), true);
   assert.equal(claim.current(), undefined);
   assert.equal(claim.claim("document-b", true), true);
+});
+
+test("rich-content unmount requests select one renderer document", () => {
+  assert.equal(
+    richContentUnmountRequested("document:a\n", "document:a"),
+    true,
+  );
+  assert.equal(
+    richContentUnmountRequested("document:a\n", "document:b"),
+    false,
+  );
+  assert.equal(
+    richContentUnmountRequested("unmount\n", "document:a"),
+    false,
+  );
 });
 
 test("primary app shell selection delegates to the exact binding, not page text", () => {
@@ -568,7 +603,7 @@ test("rich-content probe requires all first-party fallback paths", () => {
   assert.equal(richContentFallbacksReady(null), false);
 });
 
-test("rich-content probe requires isolated remount and activation for eight surface variants", () => {
+test("rich-content probe requires semantic remount and activation for eight surface variants", () => {
   const interactions = {
     directive: {
       initialLabel: "Rich probe directive 0",
@@ -578,7 +613,7 @@ test("rich-content probe requires isolated remount and activation for eight surf
       invalidateClicked: true,
       replaced: true,
       oldDisconnected: true,
-      otherOwnersStable: true,
+      otherOwnersReady: true,
       clicked: true,
       changed: true,
     },
@@ -590,7 +625,7 @@ test("rich-content probe requires isolated remount and activation for eight surf
       invalidateClicked: true,
       replaced: true,
       oldDisconnected: true,
-      otherOwnersStable: true,
+      otherOwnersReady: true,
       clicked: true,
       changed: true,
     },
@@ -602,7 +637,7 @@ test("rich-content probe requires isolated remount and activation for eight surf
       invalidateClicked: true,
       replaced: true,
       oldDisconnected: true,
-      otherOwnersStable: true,
+      otherOwnersReady: true,
       clicked: true,
       changed: true,
     },
@@ -614,7 +649,7 @@ test("rich-content probe requires isolated remount and activation for eight surf
       invalidateClicked: true,
       replaced: true,
       oldDisconnected: true,
-      otherOwnersStable: true,
+      otherOwnersReady: true,
       clicked: true,
       changed: true,
     },
@@ -626,7 +661,7 @@ test("rich-content probe requires isolated remount and activation for eight surf
       invalidateClicked: true,
       replaced: true,
       oldDisconnected: true,
-      otherOwnersStable: true,
+      otherOwnersReady: true,
       clicked: true,
       changed: true,
     },
@@ -638,7 +673,7 @@ test("rich-content probe requires isolated remount and activation for eight surf
       invalidateClicked: true,
       replaced: true,
       oldDisconnected: true,
-      otherOwnersStable: true,
+      otherOwnersReady: true,
       clicked: true,
       changed: true,
     },
@@ -650,7 +685,7 @@ test("rich-content probe requires isolated remount and activation for eight surf
       invalidateClicked: true,
       replaced: true,
       oldDisconnected: true,
-      otherOwnersStable: true,
+      otherOwnersReady: true,
       clicked: true,
       changed: true,
     },
@@ -662,7 +697,7 @@ test("rich-content probe requires isolated remount and activation for eight surf
       invalidateClicked: true,
       replaced: true,
       oldDisconnected: true,
-      otherOwnersStable: true,
+      otherOwnersReady: true,
       clicked: true,
       changed: true,
     },
@@ -675,7 +710,7 @@ test("rich-content probe requires isolated remount and activation for eight surf
       "invalidateClicked",
       "replaced",
       "oldDisconnected",
-      "otherOwnersStable",
+      "otherOwnersReady",
       "clicked",
       "changed",
     ]) {
@@ -690,6 +725,190 @@ test("rich-content probe requires isolated remount and activation for eight surf
     }
   }
 });
+
+test("UI-surface actions require semantic state after React replaces a node", () => {
+  const replacedWithoutChange = {
+    kind: "action",
+    found: true,
+    clicked: true,
+    oldDisconnected: true,
+    replaced: true,
+    changed: false,
+  };
+  assert.equal(uiSurfaceInteractionReady(replacedWithoutChange), false);
+  assert.equal(
+    uiSurfaceInteractionReady({
+      ...replacedWithoutChange,
+      oldDisconnected: false,
+      replaced: false,
+      changed: true,
+    }),
+    true,
+  );
+  assert.equal(
+    uiSurfaceInteractionReady({
+      kind: "dismiss",
+      found: true,
+      clicked: true,
+      oldDisconnected: true,
+      removed: false,
+    }),
+    false,
+  );
+  assert.equal(
+    uiSurfaceInteractionReady({
+      kind: "dismiss",
+      found: true,
+      clicked: true,
+      removed: true,
+    }),
+    true,
+  );
+});
+
+function runRichContentInteractionScript({
+  changeOtherLabel = false,
+  currentIndex = 0,
+  initialOtherLabel,
+  otherMutation,
+} = {}) {
+  const target = {
+    key: "target",
+    surface: "target",
+    initial: "Target 0",
+    final: "Target 1",
+  };
+  const other = {
+    key: "other",
+    surface: "other",
+    initial: "Other 0",
+    final: "Other 1",
+  };
+  const specifications = (currentIndex === 0
+    ? [target, other]
+    : [other, target]
+  ).map((specification, index) => ({ ...specification, index }));
+  const elements = new Map();
+  class FakeElement {
+    constructor(label, onClick = () => {}) {
+      this.isConnected = true;
+      this.label = label;
+      this.onClick = onClick;
+    }
+
+    click() {
+      this.onClick(this);
+    }
+
+    getAttribute(name) {
+      return name === "aria-label" ? this.label : null;
+    }
+  }
+  const replace = (surface, label, onInvalidate = () => {}) => {
+    for (const control of ["action", "invalidate"]) {
+      for (const element of elements.get(`${surface}:${control}`) ?? []) {
+        element.isConnected = false;
+      }
+    }
+    const action = new FakeElement(label, (element) => {
+      if (surface === "target") element.label = "Target 1";
+    });
+    const invalidate = new FakeElement(null, onInvalidate);
+    elements.set(`${surface}:action`, [action]);
+    elements.set(`${surface}:invalidate`, [invalidate]);
+  };
+  const replaceAll = (afterInvalidation = false) => {
+    const expectedOtherLabel = currentIndex === 0 ? "Other 0" : "Other 1";
+    replace(
+      "other",
+      afterInvalidation && changeOtherLabel
+        ? "Other changed"
+        : initialOtherLabel ?? expectedOtherLabel,
+    );
+    if (afterInvalidation && otherMutation === "missing") {
+      elements.set("other:invalidate", []);
+    }
+    if (afterInvalidation && otherMutation === "duplicate") {
+      elements.get("other:action")?.push(new FakeElement("Other 0"));
+    }
+    replace("target", "Target 0", () => replaceAll(true));
+  };
+  replaceAll();
+  const document = {
+    querySelectorAll(selector) {
+      const match = /data-rich-probe-surface="([^"]+)".*data-rich-probe-control="([^"]+)"/.exec(
+        selector,
+      );
+      return match ? elements.get(`${match[1]}:${match[2]}`) ?? [] : [];
+    },
+  };
+  let now = 0;
+  const FakeDate = { now: () => now };
+  const setTimeout = (callback) => {
+    now += 10_001;
+    callback();
+  };
+  const evaluate = new Function(
+    "document",
+    "HTMLElement",
+    "Date",
+    "setTimeout",
+    `return ${richContentInteractionScript(
+      specifications[currentIndex],
+      specifications,
+    )}`,
+  );
+  return evaluate(document, FakeElement, FakeDate, setTimeout);
+}
+
+test("rich-content interaction accepts semantic owners after a parent remount", async () => {
+  const interaction = await runRichContentInteractionScript();
+  assert.deepEqual(interaction, {
+    initialLabel: "Target 0",
+    finalLabel: "Target 1",
+    found: true,
+    invalidateFound: true,
+    invalidateClicked: true,
+    replaced: true,
+    oldDisconnected: true,
+    otherOwnersReady: true,
+    clicked: true,
+    changed: true,
+  });
+});
+
+test("rich-content interaction rejects a changed unrelated owner", async () => {
+  const interaction = await runRichContentInteractionScript({
+    changeOtherLabel: true,
+  });
+  assert.equal(interaction.oldDisconnected, true);
+  assert.equal(interaction.replaced, true);
+  assert.equal(interaction.otherOwnersReady, false);
+  assert.equal(interaction.clicked, false);
+  assert.equal(interaction.changed, false);
+});
+
+test("rich-content interaction rejects a prior owner that regressed before the next action", async () => {
+  const interaction = await runRichContentInteractionScript({
+    currentIndex: 1,
+    initialOtherLabel: "BROKEN",
+  });
+  assert.equal(interaction.found, false);
+  assert.equal(interaction.otherOwnersReady, false);
+  assert.equal(interaction.clicked, false);
+  assert.equal(interaction.changed, false);
+});
+
+for (const otherMutation of ["missing", "duplicate"]) {
+  test(`rich-content interaction rejects a ${otherMutation} unrelated control`, async () => {
+    const interaction = await runRichContentInteractionScript({ otherMutation });
+    assert.equal(interaction.oldDisconnected, true);
+    assert.equal(interaction.replaced, true);
+    assert.equal(interaction.otherOwnersReady, false);
+    assert.equal(interaction.clicked, false);
+    assert.equal(interaction.changed, false);
+  });
+}
 
 test("unmount diagnostics keep the mounted proof after the probe disappears", () => {
   const mounted = {

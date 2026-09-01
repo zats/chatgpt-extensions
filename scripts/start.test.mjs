@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   assertNativeMainProbeEvidence,
+  assertProbeDocumentIdentity,
   assertProductExtensionDiagnostics,
   assertProductExtensionRealUiDiagnostics,
   assertUiSurfaceDiagnostics,
@@ -18,11 +19,13 @@ import {
   seedGateThreads,
   summarizeNativeMainEvidence,
   summarizeGateRuntimeEvents,
+  summarizeGateRichProbeReadiness,
   summarizeRichProbeEventSequence,
   summarizeProductExtensionEvidence,
   summarizeProductExtensionRealUiEvidence,
   summarizeUiSurfaceEvidence,
   uiSurfaceDiagnosticFailureCode,
+  waitForCurrentRendererDiagnostics,
 } from "./start.mjs";
 import {
   bootstrapFile,
@@ -30,6 +33,8 @@ import {
   createLaunchConfiguration,
   inspectChatGptApp,
   ownedRuntimeProcesses,
+  rendererDocumentActivationReady,
+  runtimeFailures,
   sanitizedLaunchEnvironment,
   sanitizedStockLaunchEnvironment,
   selectBinding,
@@ -100,6 +105,314 @@ test("public gate evidence uses strict allowlists", () => {
     ]),
     ["extension.activate", "conversation-item.dispose"],
   );
+
+  const readyFallbacks = () => ({
+    nonMatch: { attempts: 1, connected: true },
+    matcherError: { attempts: 1, connected: true },
+    rendererError: { attempts: 1, connected: true },
+  });
+  const interaction = (initialLabel, finalLabel) => ({
+    initialLabel,
+    finalLabel,
+    found: true,
+    invalidateFound: true,
+    invalidateClicked: true,
+    replaced: true,
+    oldDisconnected: true,
+    otherOwnersReady: true,
+    clicked: true,
+    changed: true,
+    privateValue,
+  });
+  const richProbeReadiness = summarizeGateRichProbeReadiness([
+    {
+      event: "rich-content-probe-failed",
+      diagnostics: {
+        stage: "mounted",
+        mounted: true,
+        registrations: {
+          assistantDirective: 2,
+          assistantContentReference: 2,
+          assistantCodeBlock: 2,
+          conversationItem: 3,
+        },
+        hits: {
+          assistantDirective: 1,
+          assistantContentReference: 1,
+          assistantMarkdown: 2,
+          assistantCodeBlock: 1,
+          localConversationItem: 1,
+          cloudConversationItem: 0,
+        },
+        drift: false,
+        cloudOwnerReady: false,
+        fallbacks: {
+          assistantDirective: {
+            unregistered: { attempts: 0, connected: true },
+            rendererError: { attempts: 1, connected: true },
+          },
+          assistantContentReference: readyFallbacks(),
+          assistantCodeBlock: readyFallbacks(),
+          conversationItemLocal: readyFallbacks(),
+          conversationItemCloud: {
+            ...readyFallbacks(),
+            matcherError: { attempts: 1, connected: false },
+          },
+        },
+        interactions: {
+          directive: interaction(
+            "Rich probe directive 0",
+            "Rich probe directive 1",
+          ),
+          directiveContainer: interaction(
+            "Rich probe container directive 0",
+            "Rich probe container directive 1",
+          ),
+          contentReference: interaction(
+            "Rich probe content reference 0",
+            "Rich probe content reference 1",
+          ),
+          codeBlock: {
+            ...interaction(
+              "Rich probe code block 0",
+              "Rich probe code block 1",
+            ),
+            changed: false,
+          },
+          streamingCodeBlock: interaction(
+            "Rich probe streaming code block 0",
+            "Rich probe streaming code block 1",
+          ),
+          conversationItem: interaction(
+            "Rich probe conversation item 0",
+            "Rich probe conversation item 1",
+          ),
+          groupedConversationItem: interaction(
+            "Rich probe grouped conversation item 0",
+            "Rich probe grouped conversation item 1",
+          ),
+          cloudConversationItem: interaction(
+            "Rich probe cloud conversation item 0",
+            "Rich probe cloud conversation item 1",
+          ),
+        },
+        rendererDocumentId: privateValue,
+        eventFile: privateValue,
+        error: { message: privateValue },
+      },
+      threadTitle: privateValue,
+      accountToken: privateValue,
+    },
+  ]);
+  assert.deepEqual(richProbeReadiness, {
+    stage: "mounted",
+    mounted: true,
+    registrations: {
+      assistantDirective: true,
+      assistantContentReference: true,
+      assistantCodeBlock: true,
+      conversationItem: true,
+    },
+    owners: {
+      assistantDirective: true,
+      assistantContentReference: true,
+      assistantMarkdown: true,
+      assistantCodeBlock: true,
+      localConversationItem: true,
+      cloudConversationItem: false,
+      driftFree: true,
+      cloudOwnerReady: false,
+    },
+    fallbacks: {
+      assistantDirective: true,
+      assistantContentReference: true,
+      assistantCodeBlock: true,
+      conversationItemLocal: true,
+      conversationItemCloud: false,
+    },
+    interactions: {
+      directive: true,
+      directiveContainer: true,
+      contentReference: true,
+      codeBlock: false,
+      streamingCodeBlock: true,
+      conversationItem: true,
+      groupedConversationItem: true,
+      cloudConversationItem: true,
+    },
+  });
+  assert.doesNotMatch(JSON.stringify(richProbeReadiness), new RegExp(privateValue));
+  assert.deepEqual(
+    summarizeGateRichProbeReadiness([
+      {
+        event: "rich-content-probe-mounted",
+        diagnostics: {
+          stage: "interacted",
+          mounted: true,
+          registrations: {
+            assistantDirective: 2,
+            assistantContentReference: 2,
+            assistantCodeBlock: 2,
+            conversationItem: 3,
+          },
+          hits: {
+            assistantDirective: 1,
+            assistantContentReference: 1,
+            assistantMarkdown: 2,
+            assistantCodeBlock: 1,
+            localConversationItem: 1,
+            cloudConversationItem: 1,
+          },
+          drift: false,
+          cloudOwnerReady: true,
+          fallbacks: {
+            assistantDirective: {
+              unregistered: { attempts: 0, connected: true },
+              rendererError: { attempts: 1, connected: true },
+            },
+            assistantContentReference: readyFallbacks(),
+            assistantCodeBlock: readyFallbacks(),
+            conversationItemLocal: readyFallbacks(),
+            conversationItemCloud: readyFallbacks(),
+          },
+          interactions: {
+            directive: interaction("Rich probe directive 0", "Rich probe directive 1"),
+            directiveContainer: interaction("Rich probe container directive 0", "Rich probe container directive 1"),
+            contentReference: interaction("Rich probe content reference 0", "Rich probe content reference 1"),
+            codeBlock: interaction("Rich probe code block 0", "Rich probe code block 1"),
+            streamingCodeBlock: interaction("Rich probe streaming code block 0", "Rich probe streaming code block 1"),
+            conversationItem: interaction("Rich probe conversation item 0", "Rich probe conversation item 1"),
+            groupedConversationItem: interaction("Rich probe grouped conversation item 0", "Rich probe grouped conversation item 1"),
+            cloudConversationItem: interaction("Rich probe cloud conversation item 0", "Rich probe cloud conversation item 1"),
+          },
+          rendererDocumentId: privateValue,
+          eventFile: privateValue,
+        },
+      },
+    ]),
+    {
+      stage: "interacted",
+      mounted: true,
+      registrations: {
+        assistantDirective: true,
+        assistantContentReference: true,
+        assistantCodeBlock: true,
+        conversationItem: true,
+      },
+      owners: {
+        assistantDirective: true,
+        assistantContentReference: true,
+        assistantMarkdown: true,
+        assistantCodeBlock: true,
+        localConversationItem: true,
+        cloudConversationItem: true,
+        driftFree: true,
+        cloudOwnerReady: true,
+      },
+      fallbacks: {
+        assistantDirective: true,
+        assistantContentReference: true,
+        assistantCodeBlock: true,
+        conversationItemLocal: true,
+        conversationItemCloud: true,
+      },
+      interactions: {
+        directive: true,
+        directiveContainer: true,
+        contentReference: true,
+        codeBlock: true,
+        streamingCodeBlock: true,
+        conversationItem: true,
+        groupedConversationItem: true,
+        cloudConversationItem: true,
+      },
+    },
+  );
+  assert.deepEqual(
+    summarizeGateRichProbeReadiness([], [
+      { stage: privateValue },
+      {
+        stage: "interacted",
+        mounted: true,
+        registrations: {},
+        hits: {},
+        fallbacks: {},
+        interactions: {},
+      },
+    ]),
+    {
+      stage: "interacted",
+      mounted: true,
+      registrations: {
+        assistantDirective: false,
+        assistantContentReference: false,
+        assistantCodeBlock: false,
+        conversationItem: false,
+      },
+      owners: {
+        assistantDirective: false,
+        assistantContentReference: false,
+        assistantMarkdown: false,
+        assistantCodeBlock: false,
+        localConversationItem: false,
+        cloudConversationItem: false,
+        driftFree: false,
+        cloudOwnerReady: false,
+      },
+      fallbacks: {
+        assistantDirective: false,
+        assistantContentReference: false,
+        assistantCodeBlock: false,
+        conversationItemLocal: false,
+        conversationItemCloud: false,
+      },
+      interactions: {
+        directive: false,
+        directiveContainer: false,
+        contentReference: false,
+        codeBlock: false,
+        streamingCodeBlock: false,
+        conversationItem: false,
+        groupedConversationItem: false,
+        cloudConversationItem: false,
+      },
+    },
+  );
+  assert.equal(
+    summarizeGateRichProbeReadiness([
+      { event: "rich-content-probe-failed", diagnostics: { stage: privateValue } },
+    ]),
+    undefined,
+  );
+  const documentA = {
+    stage: "interacted",
+    mounted: true,
+    registrations: {},
+    hits: {},
+    fallbacks: {},
+    interactions: {},
+    rendererDocumentId: "document-a",
+  };
+  const documentB = {
+    ...documentA,
+    mounted: false,
+    rendererDocumentId: "document-b",
+  };
+  assert.equal(
+    summarizeGateRichProbeReadiness(
+      [
+        { event: "rich-content-probe-mounted", diagnostics: documentA },
+        { event: "rich-content-probe-failed", diagnostics: documentB },
+      ],
+      [documentB],
+      "document-a",
+    )?.mounted,
+    true,
+  );
+  assert.equal(
+    summarizeGateRichProbeReadiness([], [documentB], "document-a"),
+    undefined,
+  );
 });
 
 function createTestApp(root, bundleIdentifier) {
@@ -145,6 +458,27 @@ function testPlistValue(infoFile, key) {
   if (value === undefined) throw new Error(`Missing test plist key: ${key}`);
   return value;
 }
+
+test("live probe diagnostics must use one renderer document", () => {
+  const diagnostics = { rendererDocumentId: "document-a" };
+  assert.equal(
+    assertProbeDocumentIdentity(
+      diagnostics,
+      "document-a",
+      "Probe diagnostics",
+    ),
+    diagnostics,
+  );
+  assert.throws(
+    () =>
+      assertProbeDocumentIdentity(
+        { rendererDocumentId: "document-b" },
+        "document-a",
+        "Probe diagnostics",
+      ),
+    /different renderer document/,
+  );
+});
 
 test("stock app inspection requires the Codex bundle and OpenAI signature", () => {
   const root = fs.mkdtempSync(path.join("/tmp", "chatgpt-stock-app."));
@@ -438,8 +772,6 @@ test("the UI gate requires each composer slot in its first-party state", () => {
     kind: "action",
     found: true,
     clicked: true,
-    oldDisconnected: true,
-    replaced: true,
     changed: true,
   });
   const renderResult = (point, state) => ({
@@ -464,7 +796,7 @@ test("the UI gate requires each composer slot in its first-party state", () => {
       kind: "dismiss",
       found: true,
       clicked: true,
-      oldDisconnected: true,
+      removed: true,
     },
     actionResult("sidebar", "home"),
     actionResult("product-menu", "home"),
@@ -493,6 +825,43 @@ test("the UI gate requires each composer slot in its first-party state", () => {
     eventFile: "events-document_test.json",
   };
   assert.doesNotThrow(() => assertUiSurfaceDiagnostics(diagnostics));
+  const replacedWithoutSemanticChange = {
+    ...diagnostics,
+    results: results.map((result) =>
+      result.name === "suggestion"
+        ? {
+            ...result,
+            oldDisconnected: true,
+            replaced: true,
+            changed: false,
+          }
+        : result,
+    ),
+  };
+  assert.throws(
+    () => assertUiSurfaceDiagnostics(replacedWithoutSemanticChange),
+    /home\.suggestion/,
+  );
+  assert.equal(
+    uiSurfaceDiagnosticFailureCode(replacedWithoutSemanticChange),
+    "ui-surface-suggestion",
+  );
+  const replacedWithoutSemanticRemoval = {
+    ...diagnostics,
+    results: results.map((result) =>
+      result.name === "announcement-dismiss"
+        ? { ...result, oldDisconnected: true, removed: false }
+        : result,
+    ),
+  };
+  assert.throws(
+    () => assertUiSurfaceDiagnostics(replacedWithoutSemanticRemoval),
+    /home\.announcement-dismiss/,
+  );
+  assert.equal(
+    uiSurfaceDiagnosticFailureCode(replacedWithoutSemanticRemoval),
+    "ui-surface-announcement",
+  );
   assert.equal(
     uiSurfaceDiagnosticFailureCode({
       ...diagnostics,
@@ -850,8 +1219,17 @@ test("activation waits for both renderer phases and main entries", async () => {
       path.join(logDirectory, "runtime.jsonl"),
       [
         { event: "exact-build-verified" },
-        { event: "renderer-entry-activation", id: "example", phase: "renderer", status: "activated" },
-        { event: "main-extensions-activated", results: [{ extensionId: "example", status: "active" }] },
+        {
+          event: "renderer-entry-activation",
+          documentId: "document-a",
+          id: "example",
+          phase: "renderer",
+          status: "activated",
+        },
+        {
+          event: "main-extensions-activated",
+          results: [{ extensionId: "example", status: "active" }],
+        },
       ].map((value) => JSON.stringify(value)).join("\n"),
     );
     const value = await waitForActivation(
@@ -864,6 +1242,150 @@ test("activation waits for both renderer phases and main entries", async () => {
       1_000,
     );
     assert.equal(value.exactBuildRecord.event, "exact-build-verified");
+    assert.deepEqual(value.rendererDocumentIds, ["document-a"]);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("renderer disconnect failures fail runtime validation", () => {
+  const failure = {
+    event: "renderer-channel-disconnect-failed",
+    documentId: "document-a",
+  };
+  assert.deepEqual(runtimeFailures([failure]), [failure]);
+});
+
+test("renderer activation phases cannot be combined across documents", () => {
+  const identities = [
+    { id: "example", main: false, phases: ["renderer", "settings"] },
+  ];
+  const split = [
+    {
+      event: "renderer-entry-activation",
+      documentId: "document-a",
+      id: "example",
+      phase: "renderer",
+      status: "activated",
+    },
+    {
+      event: "renderer-entry-activation",
+      documentId: "document-b",
+      id: "example",
+      phase: "settings",
+      status: "activated",
+    },
+  ];
+  assert.equal(
+    rendererDocumentActivationReady(split, identities, "document-a"),
+    false,
+  );
+  assert.equal(
+    rendererDocumentActivationReady(split, identities, "document-b"),
+    false,
+  );
+  assert.equal(
+    rendererDocumentActivationReady(
+      [
+        ...split,
+        {
+          event: "renderer-entry-activation",
+          documentId: "document-b",
+          id: "example",
+          phase: "renderer",
+          status: "activated",
+        },
+      ],
+      identities,
+      "document-b",
+    ),
+    true,
+  );
+  assert.equal(
+    rendererDocumentActivationReady(
+      [
+        ...split,
+        {
+          event: "renderer-entry-activation",
+          documentId: "document-a",
+          id: "example",
+          phase: "settings",
+          status: "activated",
+        },
+        {
+          event: "renderer-document-inactive",
+          documentId: "document-a",
+          reason: "main-frame-navigation",
+        },
+      ],
+      identities,
+      "document-a",
+    ),
+    false,
+  );
+});
+
+test("rich diagnostics wait past an inactive document for the current document", async () => {
+  const root = fs.mkdtempSync(path.join("/tmp", "chatgpt-current-diagnostics."));
+  const logDirectory = path.join(root, "log");
+  const diagnosticsFile = path.join(root, "rich-content-diagnostics.json");
+  const logFile = path.join(logDirectory, "runtime.jsonl");
+  const identities = [
+    { id: "example", main: false, phases: ["renderer"] },
+  ];
+  fs.mkdirSync(logDirectory);
+  fs.writeFileSync(
+    logFile,
+    [
+      {
+        event: "renderer-entry-activation",
+        documentId: "document-a",
+        id: "example",
+        phase: "renderer",
+        status: "activated",
+      },
+      {
+        event: "renderer-document-inactive",
+        documentId: "document-a",
+        reason: "main-frame-navigation",
+      },
+    ].map((record) => JSON.stringify(record)).join("\n"),
+  );
+  fs.writeFileSync(
+    diagnosticsFile,
+    `${JSON.stringify({})}\n`,
+  );
+  try {
+    setTimeout(() => {
+      fs.writeFileSync(
+        diagnosticsFile,
+        `${JSON.stringify({ rendererDocumentId: "document-a" })}\n`,
+      );
+    }, 10);
+    setTimeout(() => {
+      fs.appendFileSync(
+        logFile,
+        `\n${JSON.stringify({
+          event: "renderer-entry-activation",
+          documentId: "document-b",
+          id: "example",
+          phase: "renderer",
+          status: "activated",
+        })}`,
+      );
+      fs.writeFileSync(
+        diagnosticsFile,
+        `${JSON.stringify({ rendererDocumentId: "document-b" })}\n`,
+      );
+    }, 25);
+    const diagnostics = await waitForCurrentRendererDiagnostics(
+      diagnosticsFile,
+      "rich-content interaction diagnostics",
+      logDirectory,
+      identities,
+      1_000,
+    );
+    assert.equal(diagnostics.rendererDocumentId, "document-b");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

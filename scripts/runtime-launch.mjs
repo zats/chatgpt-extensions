@@ -34,6 +34,7 @@ export const runtimeFailureEventNames = new Set([
   "renderer-host-injection-failed",
   "renderer-entry-registration-failed",
   "renderer-channel-connect-failed",
+  "renderer-channel-disconnect-failed",
   "renderer-channel-inject-failed",
   "renderer-bootstrap-error",
   "main-extension-host-failed",
@@ -466,12 +467,38 @@ export async function stopOwnedProcesses(metadata, options = {}) {
   }
 }
 
-export async function waitForActivation(metadata, identities, timeoutMilliseconds = 120_000) {
-  const expected = new Set(
-    identities.flatMap((identity) =>
-      identity.phases.map((phase) => `${identity.id}:${phase}`),
+function expectedRendererActivationKeys(identities) {
+  return identities.flatMap((identity) =>
+    identity.phases.map((phase) => `${identity.id}:${phase}`),
+  );
+}
+
+export function rendererDocumentActivationReady(records, identities, documentId) {
+  if (typeof documentId !== "string" || documentId.length === 0) return false;
+  if (
+    records.some(
+      (record) =>
+        record?.event === "renderer-document-inactive" &&
+        record?.documentId === documentId,
+    )
+  ) {
+    return false;
+  }
+  const expected = expectedRendererActivationKeys(identities);
+  const activated = new Set(
+    records.flatMap((record) =>
+      record?.event === "renderer-entry-activation" &&
+      record?.status === "activated" &&
+      record?.documentId === documentId
+        ? [`${record.id}:${record.phase}`]
+        : [],
     ),
   );
+  return expected.every((key) => activated.has(key));
+}
+
+export async function waitForActivation(metadata, identities, timeoutMilliseconds = 120_000) {
+  const expectedRenderer = expectedRendererActivationKeys(identities);
   const expectedMain = new Set(
     identities.filter((identity) => identity.main).map((identity) => identity.id),
   );
@@ -486,17 +513,36 @@ export async function waitForActivation(metadata, identities, timeoutMillisecond
     }
     exactBuildRecord ??= records.find((record) => record.event === "exact-build-verified");
     for (const record of records) {
-      if (record.event === "renderer-entry-activation" && record.status === "activated") {
-        expected.delete(`${record.id}:${record.phase}`);
-      }
       if (record.event === "main-extensions-activated" && Array.isArray(record.results)) {
         for (const result of record.results) {
           if (result?.status === "active") expectedMain.delete(result.extensionId);
         }
       }
     }
-    if (exactBuildRecord && expected.size === 0 && expectedMain.size === 0) {
-      return Object.freeze({ exactBuildRecord, records });
+    const rendererDocumentIds = [
+      ...new Set(
+        records.flatMap((record) =>
+          record?.event === "renderer-entry-activation" &&
+          record?.status === "activated" &&
+          typeof record?.documentId === "string" &&
+          record.documentId.length > 0
+            ? [record.documentId]
+            : [],
+        ),
+      ),
+    ].filter((documentId) =>
+      rendererDocumentActivationReady(records, identities, documentId),
+    );
+    if (
+      exactBuildRecord &&
+      (expectedRenderer.length === 0 || rendererDocumentIds.length > 0) &&
+      expectedMain.size === 0
+    ) {
+      return Object.freeze({
+        exactBuildRecord,
+        records,
+        rendererDocumentIds: Object.freeze(rendererDocumentIds),
+      });
     }
     if (ownedRuntimeProcesses(metadata).length === 0) {
       throw new Error(`ChatGPT exited; see ${path.join(metadata.session, "chatgpt.stderr.log")}`);
@@ -505,7 +551,7 @@ export async function waitForActivation(metadata, identities, timeoutMillisecond
   }
   throw new Error(
     `Timed out waiting for v5 activation: ${[
-      ...expected,
+      ...expectedRenderer,
       ...[...expectedMain].map((id) => `${id}:main`),
     ].join(", ")}`,
   );

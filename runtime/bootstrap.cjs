@@ -151,9 +151,35 @@ function richContentInteractionsReady(interactions) {
       interactions?.[key]?.invalidateClicked === true &&
       interactions?.[key]?.replaced === true &&
       interactions?.[key]?.oldDisconnected === true &&
-      interactions?.[key]?.otherOwnersStable === true &&
+      interactions?.[key]?.otherOwnersReady === true &&
       interactions?.[key]?.clicked === true &&
       interactions?.[key]?.changed === true,
+  );
+}
+
+function uiSurfaceInteractionReady(result) {
+  if (result?.kind === "render") {
+    return (
+      result.ownerFound === true &&
+      result.invalidateFound === true &&
+      result.invalidateClicked === true &&
+      result.oldDisconnected === true &&
+      result.replaced === true &&
+      result.actionFound === true &&
+      result.actionClicked === true
+    );
+  }
+  if (result?.kind === "dismiss") {
+    return (
+      result.found === true &&
+      result.clicked === true &&
+      result.removed === true
+    );
+  }
+  return (
+    result?.found === true &&
+    result.clicked === true &&
+    result.changed === true
   );
 }
 
@@ -188,6 +214,14 @@ function diagnosticErrorName(error) {
       ? error.name
       : "Error";
   return safeDiagnosticErrorNames.has(name) ? name : "Error";
+}
+
+function productExtensionRealUiFailureDiagnostics(documentId, error) {
+  return Object.freeze({
+    rendererDocumentId: documentId,
+    validationPassed: false,
+    errorName: diagnosticErrorName(error),
+  });
 }
 
 function safeMainActivationResults(results) {
@@ -380,6 +414,11 @@ function sanitizeProductExtensionRealUiDiagnostics(diagnostics) {
     });
 
   return Object.freeze({
+    rendererDocumentId:
+      typeof diagnostics?.rendererDocumentId === "string" &&
+      diagnostics.rendererDocumentId.length > 0
+        ? diagnostics.rendererDocumentId
+        : null,
     validationPassed,
     realDom: validationPassed && diagnostics?.realDom === true,
     thread: Object.freeze({
@@ -553,6 +592,14 @@ function richMessageProbeEventFile(documentId) {
     throw new TypeError("Rich Message Probe document ID is required");
   }
   return `${encodeURIComponent(documentId)}.json`;
+}
+
+function richContentUnmountRequested(value, documentId) {
+  return (
+    typeof documentId === "string" &&
+    documentId.length > 0 &&
+    value === `${documentId}\n`
+  );
 }
 
 function rendererHostReadyExpression(appVersion) {
@@ -747,6 +794,193 @@ function startRendererLifecycle(options) {
   }
   options.webContents.getAllWebContents().forEach(options.lifecycle.attach);
   return activation;
+}
+
+function richContentInteractionScript(specification, specifications) {
+  return `(async () => {
+    const specification = ${JSON.stringify(specification)};
+    const specifications = ${JSON.stringify(specifications)};
+    const selector = (surface, control) =>
+      '[data-rich-probe-surface="' + surface + '"]' +
+      '[data-rich-probe-control="' + control + '"]';
+    const selectAll = (surface, control) =>
+      Array.from(document.querySelectorAll(selector(surface, control)));
+    const wait = (milliseconds = 16) =>
+      new Promise((resolve) => setTimeout(resolve, milliseconds));
+    const otherSpecifications = specifications.filter(
+      ({ surface }) => surface !== specification.surface,
+    );
+    const captureOtherOwners = () => otherSpecifications.map((other) => {
+      const surface = other.surface;
+      const actions = selectAll(surface, "action");
+      const invalidates = selectAll(surface, "invalidate");
+      const action = actions[0] ?? null;
+      const invalidate = invalidates[0] ?? null;
+      const expectedLabel =
+        other.index < specification.index ? other.final : other.initial;
+      return {
+        surface,
+        expectedLabel,
+        ready:
+          actions.length === 1 &&
+          invalidates.length === 1 &&
+          action instanceof HTMLElement &&
+          action.isConnected &&
+          action.getAttribute("aria-label") === expectedLabel &&
+          invalidate instanceof HTMLElement &&
+          invalidate.isConnected &&
+          typeof action.click === "function" &&
+          typeof invalidate.click === "function",
+      };
+    });
+    const otherOwnersReady = (owners) => owners.every(
+      ({ surface, expectedLabel, ready }) => {
+        const actions = selectAll(surface, "action");
+        const invalidates = selectAll(surface, "invalidate");
+        const action = actions[0] ?? null;
+        const invalidate = invalidates[0] ?? null;
+        return (
+          ready &&
+          actions.length === 1 &&
+          invalidates.length === 1 &&
+          action instanceof HTMLElement &&
+          action.isConnected &&
+          invalidate instanceof HTMLElement &&
+          invalidate.isConnected &&
+          typeof action.click === "function" &&
+          typeof invalidate.click === "function" &&
+          action.getAttribute("aria-label") === expectedLabel
+        );
+      },
+    );
+    let oldAction = null;
+    let oldInvalidate = null;
+    let otherOwners = [];
+    let found = false;
+    let invalidateFound = false;
+    const baselineDeadline = Date.now() + 10_000;
+    while (Date.now() < baselineDeadline) {
+      const actions = selectAll(specification.surface, "action");
+      const invalidates = selectAll(specification.surface, "invalidate");
+      const candidateAction = actions[0] ?? null;
+      const candidateInvalidate = invalidates[0] ?? null;
+      const candidateOthers = captureOtherOwners();
+      const candidateFound =
+        actions.length === 1 &&
+        candidateAction instanceof HTMLElement &&
+        candidateAction.isConnected &&
+        candidateAction.getAttribute("aria-label") === specification.initial &&
+        typeof candidateAction.click === "function";
+      const candidateInvalidateFound =
+        invalidates.length === 1 &&
+        candidateInvalidate instanceof HTMLElement &&
+        candidateInvalidate.isConnected &&
+        typeof candidateInvalidate.click === "function";
+      if (
+        candidateFound &&
+        candidateInvalidateFound &&
+        otherOwnersReady(candidateOthers)
+      ) {
+        oldAction = candidateAction;
+        oldInvalidate = candidateInvalidate;
+        otherOwners = candidateOthers;
+        found = true;
+        invalidateFound = true;
+        break;
+      }
+      await wait();
+    }
+    if (!found || !invalidateFound || !otherOwnersReady(otherOwners)) {
+      return {
+        initialLabel: specification.initial,
+        finalLabel: specification.final,
+        found,
+        invalidateFound,
+        invalidateClicked: false,
+        replaced: false,
+        oldDisconnected: false,
+        otherOwnersReady: false,
+        clicked: false,
+        changed: false,
+      };
+    }
+    oldInvalidate.click();
+    let replacementAction = null;
+    let replacementInvalidate = null;
+    const replacementDeadline = Date.now() + 10_000;
+    while (Date.now() < replacementDeadline) {
+      const actions = selectAll(specification.surface, "action");
+      const invalidates = selectAll(specification.surface, "invalidate");
+      replacementAction = actions[0] ?? null;
+      replacementInvalidate = invalidates[0] ?? null;
+      if (
+        !oldAction.isConnected &&
+        !oldInvalidate.isConnected &&
+        actions.length === 1 &&
+        invalidates.length === 1 &&
+        replacementAction instanceof HTMLElement &&
+        replacementInvalidate instanceof HTMLElement &&
+        replacementAction !== oldAction &&
+        replacementInvalidate !== oldInvalidate &&
+        replacementAction.getAttribute("aria-label") === specification.initial &&
+        otherOwnersReady(otherOwners)
+      ) {
+        break;
+      }
+      await wait();
+    }
+    const oldDisconnected =
+      !oldAction.isConnected && !oldInvalidate.isConnected;
+    const replacementActions = selectAll(specification.surface, "action");
+    const replacementInvalidates = selectAll(specification.surface, "invalidate");
+    const replaced =
+      replacementActions.length === 1 &&
+      replacementInvalidates.length === 1 &&
+      replacementAction instanceof HTMLElement &&
+      replacementInvalidate instanceof HTMLElement &&
+      replacementAction !== oldAction &&
+      replacementInvalidate !== oldInvalidate &&
+      replacementAction.getAttribute("aria-label") === specification.initial;
+    let otherOwnersRemainReady = otherOwnersReady(otherOwners);
+    let clicked = false;
+    let changed = false;
+    if (oldDisconnected && replaced && otherOwnersRemainReady) {
+      replacementAction.click();
+      clicked = true;
+      const activationDeadline = Date.now() + 10_000;
+      while (Date.now() < activationDeadline) {
+        const actions = selectAll(specification.surface, "action");
+        const invalidates = selectAll(specification.surface, "invalidate");
+        if (
+          actions.length === 1 &&
+          invalidates.length === 1 &&
+          actions[0] instanceof HTMLElement &&
+          actions[0].isConnected &&
+          invalidates[0] instanceof HTMLElement &&
+          invalidates[0].isConnected &&
+          actions[0].getAttribute("aria-label") === specification.final
+        ) {
+          changed = true;
+          break;
+        }
+        await wait();
+      }
+      otherOwnersRemainReady =
+        otherOwnersRemainReady && otherOwnersReady(otherOwners);
+    }
+    return {
+      initialLabel: specification.initial,
+      finalLabel: specification.final,
+      found,
+      invalidateFound,
+      invalidateClicked: true,
+      replaced,
+      oldDisconnected,
+      otherOwnersReady: otherOwnersRemainReady,
+      clicked,
+      changed,
+    };
+  })()`;
 }
 
 if (
@@ -979,7 +1213,7 @@ function initialize() {
 
   async function interactWithRichContentProbe(contents, document) {
     const specifications = Object.entries(richContentInteractionLabels).map(
-      ([key, labels]) => ({ key, ...labels }),
+      ([key, labels], index) => ({ key, index, ...labels }),
     );
     const interactions = {};
     for (const specification of specifications) {
@@ -990,116 +1224,7 @@ function initialize() {
         break;
       }
       interactions[specification.key] = await contents.executeJavaScript(
-        `(async () => {
-          const specification = ${JSON.stringify(specification)};
-          const surfaces = ${JSON.stringify(
-            specifications.map(({ surface }) => surface),
-          )};
-          const select = (surface, control) => document.querySelector(
-            '[data-rich-probe-surface="' + surface + '"]' +
-            '[data-rich-probe-control="' + control + '"]'
-          );
-          const wait = () => new Promise((resolve) => setTimeout(resolve, 16));
-          const oldAction = select(specification.surface, "action");
-          const oldInvalidate = select(specification.surface, "invalidate");
-          const found =
-            oldAction instanceof HTMLElement &&
-            oldAction.getAttribute("aria-label") === specification.initial &&
-            typeof oldAction.click === "function";
-          const invalidateFound =
-            oldInvalidate instanceof HTMLElement &&
-            typeof oldInvalidate.click === "function";
-          const otherControls = surfaces
-            .filter((surface) => surface !== specification.surface)
-            .flatMap((surface) => [
-              { surface, control: "action", element: select(surface, "action") },
-              { surface, control: "invalidate", element: select(surface, "invalidate") },
-            ]);
-          const otherOwnersFound = otherControls.every(
-            ({ element }) => element instanceof HTMLElement,
-          );
-          if (!found || !invalidateFound || !otherOwnersFound) {
-            return {
-              initialLabel: specification.initial,
-              finalLabel: specification.final,
-              found,
-              invalidateFound,
-              invalidateClicked: false,
-              replaced: false,
-              oldDisconnected: false,
-              otherOwnersStable: false,
-              clicked: false,
-              changed: false,
-            };
-          }
-          oldInvalidate.click();
-          let replacementAction = null;
-          let replacementInvalidate = null;
-          const replacementDeadline = Date.now() + 10_000;
-          while (Date.now() < replacementDeadline) {
-            replacementAction = select(specification.surface, "action");
-            replacementInvalidate = select(specification.surface, "invalidate");
-            if (
-              !oldAction.isConnected &&
-              !oldInvalidate.isConnected &&
-              replacementAction instanceof HTMLElement &&
-              replacementInvalidate instanceof HTMLElement &&
-              replacementAction !== oldAction &&
-              replacementInvalidate !== oldInvalidate &&
-              replacementAction.getAttribute("aria-label") === specification.initial
-            ) {
-              break;
-            }
-            await wait();
-          }
-          const oldDisconnected =
-            !oldAction.isConnected && !oldInvalidate.isConnected;
-          const replaced =
-            replacementAction instanceof HTMLElement &&
-            replacementInvalidate instanceof HTMLElement &&
-            replacementAction !== oldAction &&
-            replacementInvalidate !== oldInvalidate &&
-            replacementAction.getAttribute("aria-label") === specification.initial;
-          let otherOwnersStable = otherControls.every(
-            ({ surface, control, element }) =>
-              element.isConnected && select(surface, control) === element,
-          );
-          let clicked = false;
-          let changed = false;
-          if (oldDisconnected && replaced && otherOwnersStable) {
-            replacementAction.click();
-            clicked = true;
-            const activationDeadline = Date.now() + 10_000;
-            while (Date.now() < activationDeadline) {
-              if (
-                replacementAction.isConnected &&
-                replacementAction.getAttribute("aria-label") === specification.final
-              ) {
-                changed = true;
-                break;
-              }
-              await wait();
-            }
-            otherOwnersStable =
-              otherOwnersStable &&
-              otherControls.every(
-                ({ surface, control, element }) =>
-                  element.isConnected && select(surface, control) === element,
-              );
-          }
-          return {
-            initialLabel: specification.initial,
-            finalLabel: specification.final,
-            found,
-            invalidateFound,
-            invalidateClicked: true,
-            replaced,
-            oldDisconnected,
-            otherOwnersStable,
-            clicked,
-            changed,
-          };
-        })()`,
+        richContentInteractionScript(specification, specifications),
       );
     }
     return interactions;
@@ -1143,6 +1268,14 @@ function initialize() {
       }
       try {
         if (!fs.existsSync(requestFile)) return;
+        if (
+          !richContentUnmountRequested(
+            fs.readFileSync(requestFile, "utf8"),
+            document.id,
+          )
+        ) {
+          return;
+        }
       } catch {
         finish(false);
         return;
@@ -1221,7 +1354,7 @@ function initialize() {
     const interactionDiagnostics = await contents.executeJavaScript(`(async () => {
       const wait = () => new Promise((resolve) => setTimeout(resolve, 25));
       const isVisible = (element) => {
-        if (!(element instanceof HTMLElement)) return false;
+        if (!(element instanceof HTMLElement) || !element.isConnected) return false;
         const rect = element.getBoundingClientRect();
         const style = getComputedStyle(element);
         return rect.width > 0 && rect.height > 0 && style.display !== "none" &&
@@ -1243,6 +1376,12 @@ function initialize() {
         element?.closest?.('button, [role="menuitem"], a, [role="button"]');
       const labelOf = (element) =>
         element?.getAttribute?.("aria-label") ?? element?.textContent?.trim() ?? "";
+      const nextCountLabel = (label) => {
+        const match = /^(.*)\\((\\d+)\\)(.*)$/.exec(label);
+        return match
+          ? match[1] + "(" + (Number(match[2]) + 1) + ")" + match[3]
+          : null;
+      };
       const activate = (element) => {
         if (!(element instanceof HTMLElement)) return false;
         element.focus?.();
@@ -1264,27 +1403,39 @@ function initialize() {
         }
         return true;
       };
-      const runAction = async (name, selector, state, open, initialMarker) => {
+      const runAction = async (name, selector, state, open) => {
         if (typeof open === "function") await open();
-        const oldMarker =
-          initialMarker instanceof HTMLElement
-            ? initialMarker
-            : await waitFor(selector);
+        const oldMarker = await waitFor(selector);
         const target = clickable(oldMarker);
-        const found = oldMarker instanceof HTMLElement;
-        const clicked = target instanceof HTMLElement && typeof target.click === "function";
-        const oldLabel = labelOf(target ?? oldMarker);
+        const found = oldMarker instanceof HTMLElement && oldMarker.isConnected;
+        const clicked =
+          found &&
+          target instanceof HTMLElement &&
+          target.isConnected &&
+          typeof target.click === "function";
+        const oldLabel = labelOf(oldMarker);
+        const expectedLabel = nextCountLabel(oldLabel);
         if (clicked) target.click();
         const deadline = Date.now() + 10_000;
-        let replacement;
+        let currentMarker;
+        let currentLabel = "";
         while (clicked && Date.now() < deadline) {
-          replacement = find(selector);
-          const replacementTarget = clickable(replacement) ?? replacement;
+          currentMarker = find(selector);
+          currentLabel = labelOf(currentMarker);
           if (
-            !oldMarker?.isConnected ||
-            replacement !== oldMarker ||
-            labelOf(replacementTarget) !== oldLabel
-          ) break;
+            currentMarker instanceof HTMLElement &&
+            currentMarker.isConnected &&
+            expectedLabel !== null &&
+            currentLabel === expectedLabel
+          ) {
+            break;
+          }
+          if (
+            typeof open === "function" &&
+            !(currentMarker instanceof HTMLElement)
+          ) {
+            await open();
+          }
           await wait();
         }
         return {
@@ -1293,11 +1444,10 @@ function initialize() {
           kind: "action",
           found,
           clicked,
-          oldDisconnected: found && oldMarker.isConnected === false,
-          replaced: replacement instanceof HTMLElement && replacement !== oldMarker,
-          changed: replacement instanceof HTMLElement &&
-            labelOf(clickable(replacement) ?? replacement) !== oldLabel,
-          label: labelOf(clickable(replacement) ?? replacement ?? target ?? oldMarker),
+          changed: expectedLabel !== null && currentLabel === expectedLabel,
+          initialLabel: oldLabel,
+          expectedLabel,
+          label: currentLabel || oldLabel,
         };
       };
       const runRender = async (point, state) => {
@@ -1392,8 +1542,6 @@ function initialize() {
                   kind: "action",
                   found: false,
                   clicked: false,
-                  oldDisconnected: false,
-                  replaced: false,
                   changed: false,
                 }
               : await runAction(
@@ -1425,7 +1573,9 @@ function initialize() {
         return preflight;
       };
       const productMenuOpen = async () => {
-        if (find('[data-cgptx-product-menu-item="ui-surface-probe.product-menu"]')) return;
+        const itemSelector =
+          '[data-cgptx-product-menu-item="ui-surface-probe.product-menu"]';
+        if (find(itemSelector)) return true;
         const trigger =
           find('[data-cgptx-product-mode-trigger]') ??
           Array.from(document.querySelectorAll('button, [role="button"]')).find(
@@ -1446,6 +1596,7 @@ function initialize() {
             }));
           }
         }
+        return (await waitFor(itemSelector)) instanceof HTMLElement;
       };
       const findFixtureThreadRow = () =>
         Array.from(
@@ -1527,12 +1678,10 @@ function initialize() {
         "suggestion",
         suggestionSelector,
         "home",
-        undefined,
-        suggestionMarker,
       ));
-      const announcementMarker = await waitFor(
-        '[data-cgptx-home-announcement="ui-surface-probe.announcement"]',
-      );
+      const announcementSelector =
+        '[data-cgptx-home-announcement="ui-surface-probe.announcement"]';
+      const announcementMarker = await waitFor(announcementSelector);
       const announcementPrimary = Array.from(
         document.querySelectorAll('button, [role="button"]'),
       ).find((element) => isVisible(element) && element.textContent?.includes("Run probe (0)"));
@@ -1540,16 +1689,10 @@ function initialize() {
         announcementPrimary instanceof HTMLElement;
       announcementPrimary?.click?.();
       const primaryDeadline = Date.now() + 10_000;
-      let primaryReplacement;
+      let currentAnnouncement;
       while (announcementPrimaryFound && Date.now() < primaryDeadline) {
-        primaryReplacement = find(
-          '[data-cgptx-home-announcement="ui-surface-probe.announcement"]',
-        );
-        if (
-          !announcementMarker.isConnected ||
-          primaryReplacement !== announcementMarker ||
-          primaryReplacement?.textContent?.includes("run 1")
-        ) break;
+        currentAnnouncement = find(announcementSelector);
+        if (currentAnnouncement?.textContent?.includes("run 1")) break;
         await wait();
       }
       results.push({
@@ -1558,14 +1701,10 @@ function initialize() {
         kind: "action",
         found: announcementPrimaryFound,
         clicked: announcementPrimaryFound,
-        oldDisconnected: announcementPrimaryFound && !announcementMarker.isConnected,
-        replaced: primaryReplacement instanceof HTMLElement &&
-          primaryReplacement !== announcementMarker,
-        changed: primaryReplacement?.textContent?.includes("run 1") === true,
+        changed: currentAnnouncement?.textContent?.includes("run 1") === true,
       });
-      const dismissMarker = primaryReplacement ?? await waitFor(
-        '[data-cgptx-home-announcement="ui-surface-probe.announcement"]',
-      );
+      const dismissMarker =
+        currentAnnouncement ?? await waitFor(announcementSelector);
       const dismissButton = Array.from(
         document.querySelectorAll('button, [role="button"]'),
       ).find((element) =>
@@ -1575,7 +1714,12 @@ function initialize() {
         dismissButton instanceof HTMLElement;
       dismissButton?.click?.();
       const dismissDeadline = Date.now() + 10_000;
-      while (dismissFound && dismissMarker.isConnected && Date.now() < dismissDeadline) {
+      let absentChecks = 0;
+      while (dismissFound && Date.now() < dismissDeadline) {
+        absentChecks = document.querySelector(announcementSelector) === null
+          ? absentChecks + 1
+          : 0;
+        if (absentChecks >= 4) break;
         await wait();
       }
       results.push({
@@ -1584,7 +1728,7 @@ function initialize() {
         kind: "dismiss",
         found: dismissFound,
         clicked: dismissFound,
-        oldDisconnected: dismissFound && !dismissMarker.isConnected,
+        removed: absentChecks >= 4,
       });
       results.push(await runAction(
         "sidebar",
@@ -1632,26 +1776,7 @@ function initialize() {
       eventFile: uiSurfaceProbeEventFile(document.id),
     });
     const failed = diagnostics?.results?.filter(
-      (result) => {
-        if (result?.kind === "render") {
-          return result.ownerFound !== true ||
-            result.invalidateFound !== true ||
-            result.invalidateClicked !== true ||
-            result.oldDisconnected !== true ||
-            result.replaced !== true ||
-            result.actionFound !== true ||
-            result.actionClicked !== true;
-        }
-        if (result?.kind === "dismiss") {
-          return result.found !== true || result.clicked !== true ||
-            result.oldDisconnected !== true;
-        }
-        return result?.found !== true ||
-          result?.clicked !== true ||
-          (result?.oldDisconnected !== true &&
-            result?.replaced !== true &&
-            result?.changed !== true);
-      },
+      (result) => !uiSurfaceInteractionReady(result),
     );
     writeProbeDiagnostics(
       contents,
@@ -1774,6 +1899,7 @@ function initialize() {
     );
     const complete = {
       ...diagnostics,
+      rendererDocumentId: document.id,
       threadColors: {
         ...diagnostics?.threadColors,
         stored: await waitForThreadColorPersistence(
@@ -1807,10 +1933,10 @@ function initialize() {
         "window.__CGPTX_HOST__?._debug?.runProductExtensionRealUiProbe?.()",
       );
     } catch (error) {
-      const failure = {
-        validationPassed: false,
-        errorName: diagnosticErrorName(error),
-      };
+      const failure = productExtensionRealUiFailureDiagnostics(
+        document.id,
+        error,
+      );
       writeProbeDiagnostics(
         contents,
         document,
@@ -1825,6 +1951,7 @@ function initialize() {
     );
     const complete = {
       ...diagnostics,
+      rendererDocumentId: document.id,
       threadColors: {
         ...diagnostics?.threadColors,
         stored: await waitForThreadColorPersistence(
@@ -2345,10 +2472,14 @@ ${code}
         mainHost.rendererConnected(document);
         return true;
       },
-      disconnect(documentId) {
-        stopRichContentProbePoller(documentId);
-        liveProbeSuiteClaim.release(documentId);
-        mainHost?.rendererDisconnected?.(documentId);
+      disconnect(documentId, reason) {
+        try {
+          stopRichContentProbePoller(documentId);
+          liveProbeSuiteClaim.release(documentId);
+          mainHost?.rendererDisconnected?.(documentId);
+        } finally {
+          log("renderer-document-inactive", { documentId, reason });
+        }
       },
       onError(phase, contents, error) {
         log(`renderer-channel-${phase}-failed`, {
@@ -2679,6 +2810,7 @@ module.exports = Object.freeze({
   createRendererLifecycle,
   isCurrentRendererDocument,
   primaryAppShellReadyExpression,
+  productExtensionRealUiFailureDiagnostics,
   probeCompletionAllowsContinuation,
   requireCurrentRendererDocument,
   rendererHostReadyExpression,
@@ -2687,12 +2819,15 @@ module.exports = Object.freeze({
   sanitizeProductExtensionRealUiDiagnostics,
   richContentFallbacksReady,
   richContentFullyUnmounted,
+  richContentInteractionScript,
   richContentInteractionsReady,
   richContentOwnersReady,
   richContentRegistrationsReady,
+  richContentUnmountRequested,
   richContentUnmountDiagnostics,
   richMessageProbeEventFile,
   startRendererLifecycle,
+  uiSurfaceInteractionReady,
   uiSurfaceProbeEventFile,
   writeCurrentRendererDocumentDiagnostics,
 });

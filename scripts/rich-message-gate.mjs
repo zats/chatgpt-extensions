@@ -71,6 +71,160 @@ const richContentMountedOwnerCounts = Object.freeze({
   conversationItem: 3,
 });
 
+const richProbeReadinessStages = new Set([
+  "registration-readiness",
+  "owner-render",
+  "mounted",
+  "interacted",
+]);
+
+const richProbeInteractionRequirements = Object.freeze([
+  ["directive", "Rich probe directive 0", "Rich probe directive 1"],
+  [
+    "directiveContainer",
+    "Rich probe container directive 0",
+    "Rich probe container directive 1",
+  ],
+  [
+    "contentReference",
+    "Rich probe content reference 0",
+    "Rich probe content reference 1",
+  ],
+  ["codeBlock", "Rich probe code block 0", "Rich probe code block 1"],
+  [
+    "streamingCodeBlock",
+    "Rich probe streaming code block 0",
+    "Rich probe streaming code block 1",
+  ],
+  [
+    "conversationItem",
+    "Rich probe conversation item 0",
+    "Rich probe conversation item 1",
+  ],
+  [
+    "groupedConversationItem",
+    "Rich probe grouped conversation item 0",
+    "Rich probe grouped conversation item 1",
+  ],
+  [
+    "cloudConversationItem",
+    "Rich probe cloud conversation item 0",
+    "Rich probe cloud conversation item 1",
+  ],
+]);
+
+const richProbeInteractionFlags = Object.freeze([
+  "found",
+  "invalidateFound",
+  "invalidateClicked",
+  "replaced",
+  "oldDisconnected",
+  "otherOwnersReady",
+  "clicked",
+  "changed",
+]);
+
+function readyMinimum(value, minimum) {
+  return Number.isFinite(value) && value >= minimum;
+}
+
+function readyFallback(value, outcomes) {
+  return outcomes.every((outcome) => {
+    const fallback = value?.[outcome];
+    return (
+      Number.isInteger(fallback?.attempts) &&
+      fallback.attempts >= (outcome === "unregistered" ? 0 : 1) &&
+      fallback.connected === true
+    );
+  });
+}
+
+function readyInteraction(value, initialLabel, finalLabel) {
+  return (
+    value?.initialLabel === initialLabel &&
+    value?.finalLabel === finalLabel &&
+    richProbeInteractionFlags.every((flag) => value?.[flag] === true)
+  );
+}
+
+export function summarizeRichProbeReadiness(diagnostics) {
+  if (!richProbeReadinessStages.has(diagnostics?.stage)) return undefined;
+  return Object.freeze({
+    stage: diagnostics.stage,
+    mounted: diagnostics?.mounted === true,
+    registrations: Object.freeze({
+      assistantDirective: readyMinimum(
+        diagnostics?.registrations?.assistantDirective,
+        2,
+      ),
+      assistantContentReference: readyMinimum(
+        diagnostics?.registrations?.assistantContentReference,
+        2,
+      ),
+      assistantCodeBlock: readyMinimum(
+        diagnostics?.registrations?.assistantCodeBlock,
+        2,
+      ),
+      conversationItem: readyMinimum(
+        diagnostics?.registrations?.conversationItem,
+        3,
+      ),
+    }),
+    owners: Object.freeze({
+      assistantDirective: readyMinimum(
+        diagnostics?.hits?.assistantDirective,
+        1,
+      ),
+      assistantContentReference: readyMinimum(
+        diagnostics?.hits?.assistantContentReference,
+        1,
+      ),
+      assistantMarkdown: readyMinimum(
+        diagnostics?.hits?.assistantMarkdown,
+        2,
+      ),
+      assistantCodeBlock: readyMinimum(
+        diagnostics?.hits?.assistantCodeBlock,
+        1,
+      ),
+      localConversationItem: readyMinimum(
+        diagnostics?.hits?.localConversationItem,
+        1,
+      ),
+      cloudConversationItem: readyMinimum(
+        diagnostics?.hits?.cloudConversationItem,
+        1,
+      ),
+      driftFree: diagnostics?.drift === false,
+      cloudOwnerReady: diagnostics?.cloudOwnerReady === true,
+    }),
+    fallbacks: Object.freeze({
+      assistantDirective: readyFallback(
+        diagnostics?.fallbacks?.assistantDirective,
+        ["unregistered", "rendererError"],
+      ),
+      ...Object.fromEntries(
+        richContentMatcherFallbackSurfaces.map((surface) => [
+          surface,
+          readyFallback(diagnostics?.fallbacks?.[surface], [
+            "nonMatch",
+            "matcherError",
+            "rendererError",
+          ]),
+        ]),
+      ),
+    }),
+    interactions: Object.freeze(
+      Object.fromEntries(
+        richProbeInteractionRequirements.map(([name, initial, final]) => [
+          name,
+          readyInteraction(diagnostics?.interactions?.[name], initial, final),
+        ]),
+      ),
+    ),
+  });
+}
+
 export function missingRichProbeEvents(names, expectedNames) {
   if (!Array.isArray(names)) return [...expectedNames];
   return expectedNames.filter((name) => !names.includes(name));
@@ -227,53 +381,9 @@ export function assertRichContentDiagnostics(diagnostics) {
       }
     }
   }
-  for (const [name, initialLabel, finalLabel] of [
-    ["directive", "Rich probe directive 0", "Rich probe directive 1"],
-    [
-      "directiveContainer",
-      "Rich probe container directive 0",
-      "Rich probe container directive 1",
-    ],
-    [
-      "contentReference",
-      "Rich probe content reference 0",
-      "Rich probe content reference 1",
-    ],
-    ["codeBlock", "Rich probe code block 0", "Rich probe code block 1"],
-    [
-      "streamingCodeBlock",
-      "Rich probe streaming code block 0",
-      "Rich probe streaming code block 1",
-    ],
-    [
-      "conversationItem",
-      "Rich probe conversation item 0",
-      "Rich probe conversation item 1",
-    ],
-    [
-      "groupedConversationItem",
-      "Rich probe grouped conversation item 0",
-      "Rich probe grouped conversation item 1",
-    ],
-    [
-      "cloudConversationItem",
-      "Rich probe cloud conversation item 0",
-      "Rich probe cloud conversation item 1",
-    ],
-  ]) {
+  for (const [name, initialLabel, finalLabel] of richProbeInteractionRequirements) {
     const interaction = interactions?.[name];
-    if (
-      interaction?.initialLabel !== initialLabel ||
-      interaction?.finalLabel !== finalLabel ||
-      interaction?.found !== true ||
-      interaction?.invalidateFound !== true ||
-      interaction?.invalidateClicked !== true ||
-      interaction?.replaced !== true ||
-      interaction?.oldDisconnected !== true ||
-      interaction?.otherOwnersStable !== true ||
-      interaction?.clicked !== true ||
-      interaction?.changed !== true
-    ) {
+    if (!readyInteraction(interaction, initialLabel, finalLabel)) {
       missing.push(`interaction.${name}`);
     }
   }

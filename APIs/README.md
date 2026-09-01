@@ -114,10 +114,12 @@ item includes standalone or grouped layout.
 
 The live step must use direct ChatGPT v5 `NODE_OPTIONS` injection. It must not
 start or call ChatGPTX. It must prove real UI interaction, deep immutable JSON,
-per-owner invalidation and remount without remounting other owners, the two
-directive fallback paths, the three matcher-capable fallback paths, and
-deterministic disposal. A static source match or a successful TypeScript build
-cannot make these API points available by itself.
+owner-targeted revision and remount, semantic continuity of every other owner,
+the two directive fallback paths, the three matcher-capable fallback paths,
+and deterministic disposal. React can replace a DOM node while its owner stays
+present and unchanged, so node identity is not part of this contract. A static
+source match or a successful TypeScript build cannot make these API points
+available by itself.
 
 The direct launcher and `run-gate` use the same startup path:
 `NODE_OPTIONS=--require runtime/bootstrap.cjs`. The gate does not add a second
