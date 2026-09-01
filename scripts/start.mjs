@@ -54,6 +54,30 @@ const requiredGateExtensionIds = Object.freeze([
   "ui-surface-probe",
   "rich-message-probe",
 ]);
+const requiredThreadFixtureColumns = Object.freeze([
+  "id",
+  "rollout_path",
+  "created_at",
+  "updated_at",
+  "source",
+  "model_provider",
+  "cwd",
+  "title",
+  "sandbox_policy",
+  "approval_mode",
+  "tokens_used",
+  "has_user_event",
+  "archived",
+  "cli_version",
+  "first_user_message",
+  "memory_mode",
+  "model",
+  "reasoning_effort",
+  "thread_source",
+  "preview",
+  "recency_at",
+  "history_mode",
+]);
 const nativeProbeNodeSha256 =
   "a28a20cd7a09cc9be1dcec47b3a301baabe4b1ea0583ece756542eb937a2b762";
 const nativeProbeFoundation =
@@ -568,6 +592,68 @@ export function seedGateThreads(codexHome) {
   return Object.freeze(fixtures);
 }
 
+export function threadFixtureSchemaReady(stateFile, executeSqlite = execFileSync) {
+  if (typeof stateFile !== "string" || stateFile.length === 0) return false;
+  try {
+    const status = fs.lstatSync(stateFile);
+    if (!status.isFile() || status.isSymbolicLink()) return false;
+    const rows = executeSqlite(
+      "/usr/bin/sqlite3",
+      [
+        "-noinit",
+        "-batch",
+        "-noheader",
+        "-list",
+        "-readonly",
+        stateFile,
+        "PRAGMA busy_timeout=1000; SELECT name FROM pragma_table_info('threads') ORDER BY cid;",
+      ],
+      {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: 2_000,
+      },
+    );
+    const columns = new Set(
+      rows
+        .trim()
+        .split("\n")
+        .filter(Boolean),
+    );
+    return requiredThreadFixtureColumns.every((column) => columns.has(column));
+  } catch {
+    return false;
+  }
+}
+
+export async function waitForThreadFixtureSchema(
+  stateFile,
+  childPid,
+  timeoutMilliseconds,
+  dependencies = {},
+) {
+  const now = dependencies.now ?? Date.now;
+  const schemaReady = dependencies.schemaReady ?? threadFixtureSchemaReady;
+  const assertProcessAlive = dependencies.assertProcessAlive ?? ((pid) => {
+    process.kill(pid, 0);
+  });
+  const wait = dependencies.wait ?? sleep;
+  const deadline = now() + Math.min(timeoutMilliseconds, 60_000);
+  while (now() < deadline) {
+    if (schemaReady(stateFile)) return stateFile;
+    try {
+      assertProcessAlive(childPid);
+    } catch (error) {
+      if (error?.code === "ESRCH") {
+        throw new Error("Stock ChatGPT exited before it initialized the threads schema");
+      }
+      throw error;
+    }
+    await wait(100);
+  }
+  throw new Error("Stock ChatGPT did not initialize the required threads schema");
+}
+
 async function warmGateCodexHome(
   identity,
   layout,
@@ -584,21 +670,11 @@ async function warmGateCodexHome(
   const stateFile = path.join(codexHome, "state_5.sqlite");
   let failure;
   try {
-    const deadline = Date.now() + Math.min(timeoutMilliseconds, 60_000);
-    while (Date.now() < deadline && !fs.existsSync(stateFile)) {
-      try {
-        process.kill(child.pid, 0);
-      } catch (error) {
-        if (error?.code === "ESRCH") {
-          throw new Error("Stock ChatGPT exited before it initialized state_5.sqlite");
-        }
-        throw error;
-      }
-      await sleep(100);
-    }
-    if (!fs.existsSync(stateFile)) {
-      throw new Error("Stock ChatGPT did not initialize state_5.sqlite");
-    }
+    await waitForThreadFixtureSchema(
+      stateFile,
+      child.pid,
+      timeoutMilliseconds,
+    );
   } catch (error) {
     failure = error;
   }
@@ -610,6 +686,9 @@ async function warmGateCodexHome(
       : error;
   }
   if (failure) throw failure;
+  if (!threadFixtureSchemaReady(stateFile)) {
+    throw new Error("Stock ChatGPT threads schema was not ready after shutdown");
+  }
   return stateFile;
 }
 

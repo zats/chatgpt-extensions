@@ -74,6 +74,10 @@ async function fixture(assets, options = {}) {
   const tagState = path.join(root, "tag-state");
   const tagCreateMode = path.join(root, "tag-create-mode");
   const releaseCreateMode = path.join(root, "release-create-mode");
+  const releaseVisibilityCountdown = path.join(
+    root,
+    "release-visibility-countdown",
+  );
   const log = path.join(root, "gh.log");
   await writeFile(releaseExistsState, String(options.releaseExists ?? true));
   await writeFile(
@@ -84,6 +88,10 @@ async function fixture(assets, options = {}) {
   );
   await writeFile(tagCreateMode, `${options.tagCreateMode ?? "success"}\n`);
   await writeFile(releaseCreateMode, `${options.releaseCreateMode ?? "success"}\n`);
+  await writeFile(
+    releaseVisibilityCountdown,
+    `${options.releaseVisibilityDelay ?? 0}\n`,
+  );
   await writeFile(log, "");
 
   const mock = path.join(bin, "gh");
@@ -169,9 +177,64 @@ if [[ "\${1:-}" == "api" ]]; then
       if [[ "$(cat "$MOCK_RELEASE_EXISTS_STATE")" == "false" ]]; then
         printf '[[]]\n'
       else
-        jq -s '[.]' "$MOCK_RELEASE_JSON"
+        visibility_countdown="$(cat "$MOCK_RELEASE_VISIBILITY_COUNTDOWN")"
+        if [[ "$visibility_countdown" -gt 0 ]]; then
+          printf '%s\n' "$((visibility_countdown - 1))" > "$MOCK_RELEASE_VISIBILITY_COUNTDOWN"
+          printf '[[]]\n'
+        else
+          jq -s '[.]' "$MOCK_RELEASE_JSON"
+        fi
       fi
       exit 0
+      ;;
+    repos/*/releases)
+      [[ "$method" == "POST" ]] || exit 92
+      tag_name=""
+      target_commitish=""
+      release_name=""
+      release_body=""
+      draft=""
+      prerelease=""
+      field_count=0
+      for argument in "$@"; do
+        case "$argument" in
+          tag_name=*) tag_name="\${argument#tag_name=}" ;;
+          target_commitish=*) target_commitish="\${argument#target_commitish=}" ;;
+          name=*) release_name="\${argument#name=}" ;;
+          body=*) release_body="\${argument#body=}" ;;
+          draft=*) draft="\${argument#draft=}" ;;
+          prerelease=*) prerelease="\${argument#prerelease=}" ;;
+          *=*) echo "unexpected release create field" >&2; exit 93 ;;
+          *) continue ;;
+        esac
+        field_count="$((field_count + 1))"
+      done
+      [[ "$field_count" -eq 6 && \
+         "$tag_name" == "$MOCK_TAG" && \
+         "$target_commitish" == "$MOCK_SOURCE_SHA" && \
+         "$release_name" == "$MOCK_TITLE" && \
+         "$release_body" == "$MOCK_NOTES" && \
+         "$draft" == "true" && \
+         "$prerelease" == "false" ]] || {
+        echo "release create payload is not exact" >&2
+        exit 93
+      }
+      case "$(cat "$MOCK_RELEASE_CREATE_MODE")" in
+        success)
+          printf 'true\n' > "$MOCK_RELEASE_EXISTS_STATE"
+          cat "$MOCK_RELEASE_JSON"
+          exit 0
+          ;;
+        race-exact)
+          printf 'true\n' > "$MOCK_RELEASE_EXISTS_STATE"
+          echo "a release with the same tag name already exists" >&2
+          exit 1
+          ;;
+        fail)
+          echo "release create failed" >&2
+          exit 1
+          ;;
+      esac
       ;;
     repos/*/releases/*)
       if [[ "$(cat "$MOCK_RELEASE_EXISTS_STATE")" == "false" ]]; then
@@ -180,25 +243,6 @@ if [[ "\${1:-}" == "api" ]]; then
       fi
       cat "$MOCK_RELEASE_JSON"
       exit 0
-      ;;
-  esac
-fi
-
-if [[ "\${1:-}" == "release" && "\${2:-}" == "create" ]]; then
-  case "$(cat "$MOCK_RELEASE_CREATE_MODE")" in
-    success)
-      printf 'true\n' > "$MOCK_RELEASE_EXISTS_STATE"
-      printf 'https://github.com/zats/chatgpt-extensions/releases/tag/%s\n' "$3"
-      exit 0
-      ;;
-    race-exact)
-      printf 'true\n' > "$MOCK_RELEASE_EXISTS_STATE"
-      echo "a release with the same tag name already exists" >&2
-      exit 1
-      ;;
-    fail)
-      echo "release create failed" >&2
-      exit 1
       ;;
   esac
 fi
@@ -228,6 +272,15 @@ exit 91
 `,
   );
   await chmod(mock, 0o755);
+  const sleepMock = path.join(bin, "sleep");
+  await writeFile(
+    sleepMock,
+    `#!/bin/bash
+set -euo pipefail
+printf 'sleep %s\n' "$*" >> "$MOCK_LOG"
+`,
+  );
+  await chmod(sleepMock, 0o755);
   return {
     root,
     bin,
@@ -256,9 +309,16 @@ function publish(value) {
         MOCK_TAG_STATE: value.tagState,
         MOCK_TAG_CREATE_MODE: path.join(value.root, "tag-create-mode"),
         MOCK_RELEASE_CREATE_MODE: path.join(value.root, "release-create-mode"),
+        MOCK_RELEASE_VISIBILITY_COUNTDOWN: path.join(
+          value.root,
+          "release-visibility-countdown",
+        ),
         MOCK_ASSET_DIRECTORY: value.assetDirectory,
         MOCK_LOG: value.log,
         MOCK_SOURCE_SHA: sourceSha,
+        MOCK_TAG: tag,
+        MOCK_TITLE: title,
+        MOCK_NOTES: notes,
         MOCK_HOSTILE_SHA: "c".repeat(40),
       },
     },
@@ -380,11 +440,37 @@ test("clean state creates the exact tag before the draft and its assets", async 
 
     const log = await readFile(value.log, "utf8");
     const createTag = log.indexOf("--method POST repos/zats/chatgpt-extensions/git/refs");
-    const createRelease = log.indexOf(`release create ${tag}`);
+    const createRelease = log.indexOf(
+      "--method POST repos/zats/chatgpt-extensions/releases",
+    );
     const firstUpload = log.indexOf(`release upload ${tag}`);
     assert.ok(createTag >= 0);
     assert.ok(createRelease > createTag);
     assert.ok(firstUpload > createRelease);
+  } finally {
+    await rm(value.root, { recursive: true, force: true });
+  }
+});
+
+test("a created draft uses its direct API response", async () => {
+  const value = await fixture([], {
+    draft: true,
+    immutable: false,
+    releaseExists: false,
+    tagSha: "missing",
+    releaseVisibilityDelay: 2,
+  });
+  try {
+    const result = publish(value);
+    assert.equal(result.status, 0, result.stderr);
+    assertExactReleaseUrl(result);
+    assert.equal(
+      await readFile(
+        path.join(value.root, "release-visibility-countdown"),
+        "utf8",
+      ),
+      "2\n",
+    );
   } finally {
     await rm(value.root, { recursive: true, force: true });
   }
@@ -431,11 +517,32 @@ test("an exact concurrent draft creation closes the release race", async () => {
     immutable: false,
     releaseExists: false,
     releaseCreateMode: "race-exact",
+    releaseVisibilityDelay: 2,
   });
   try {
     const result = publish(value);
     assert.equal(result.status, 0, result.stderr);
     assertExactReleaseUrl(result);
+  } finally {
+    await rm(value.root, { recursive: true, force: true });
+  }
+});
+
+test("an invisible concurrent draft fails before asset mutation", async () => {
+  const value = await fixture([], {
+    draft: true,
+    immutable: false,
+    releaseExists: false,
+    releaseCreateMode: "race-exact",
+    releaseVisibilityDelay: 100,
+  });
+  try {
+    const result = publish(value);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /could not create exact draft release/);
+    const log = await readFile(value.log, "utf8");
+    assert.equal(log.split("sleep 1").length - 1, 14);
+    assert.doesNotMatch(log, /release upload|release edit/);
   } finally {
     await rm(value.root, { recursive: true, force: true });
   }

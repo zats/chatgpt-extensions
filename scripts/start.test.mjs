@@ -24,7 +24,9 @@ import {
   summarizeProductExtensionEvidence,
   summarizeProductExtensionRealUiEvidence,
   summarizeUiSurfaceEvidence,
+  threadFixtureSchemaReady,
   uiSurfaceDiagnosticFailureCode,
+  waitForThreadFixtureSchema,
   waitForCurrentRendererDiagnostics,
 } from "./start.mjs";
 import {
@@ -1049,6 +1051,7 @@ test("the gate uses only a marked isolated CODEX_HOME and seeds two threads", ()
         history_mode TEXT NOT NULL
       );
     `]);
+    assert.equal(threadFixtureSchemaReady(stateFile), true);
     const fixtures = seedGateThreads(codexHome);
     assert.equal(fixtures.length, 2);
     const count = Number(
@@ -1078,6 +1081,87 @@ test("the gate uses only a marked isolated CODEX_HOME and seeds two threads", ()
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("the gate waits for the complete thread fixture schema", () => {
+  const root = fs.mkdtempSync(path.join("/tmp", "chatgpt-gate-schema."));
+  try {
+    const stateFile = path.join(root, "state_5.sqlite");
+    execFileSync("/usr/bin/sqlite3", [
+      stateFile,
+      "CREATE TABLE threads (id TEXT PRIMARY KEY, title TEXT NOT NULL);",
+    ]);
+    assert.equal(threadFixtureSchemaReady(stateFile), false);
+    assert.equal(threadFixtureSchemaReady(path.join(root, "missing.sqlite")), false);
+
+    let sqliteInvocation;
+    threadFixtureSchemaReady(stateFile, (executable, sqliteArguments, options) => {
+      sqliteInvocation = { executable, arguments: sqliteArguments, options };
+      return "id\ntitle\n";
+    });
+    assert.equal(sqliteInvocation.executable, "/usr/bin/sqlite3");
+    assert.deepEqual(sqliteInvocation.arguments.slice(0, 5), [
+      "-noinit",
+      "-batch",
+      "-noheader",
+      "-list",
+      "-readonly",
+    ]);
+    assert.match(sqliteInvocation.arguments.at(-1), /SELECT name FROM pragma_table_info/);
+    assert.deepEqual(sqliteInvocation.options.stdio, ["ignore", "pipe", "ignore"]);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the gate polls the thread schema and fails on exit or timeout", async () => {
+  let clock = 0;
+  let readinessChecks = 0;
+  const waits = [];
+  assert.equal(
+    await waitForThreadFixtureSchema("/state.sqlite", 123, 500, {
+      now: () => clock,
+      schemaReady: () => {
+        readinessChecks += 1;
+        return readinessChecks === 3;
+      },
+      assertProcessAlive: () => {},
+      wait: async (milliseconds) => {
+        waits.push(milliseconds);
+        clock += milliseconds;
+      },
+    }),
+    "/state.sqlite",
+  );
+  assert.equal(readinessChecks, 3);
+  assert.deepEqual(waits, [100, 100]);
+
+  await assert.rejects(
+    waitForThreadFixtureSchema("/state.sqlite", 123, 500, {
+      now: () => 0,
+      schemaReady: () => false,
+      assertProcessAlive: () => {
+        const error = new Error("gone");
+        error.code = "ESRCH";
+        throw error;
+      },
+      wait: async () => {},
+    }),
+    /exited before it initialized the threads schema/,
+  );
+
+  clock = 0;
+  await assert.rejects(
+    waitForThreadFixtureSchema("/state.sqlite", 123, 200, {
+      now: () => clock,
+      schemaReady: () => false,
+      assertProcessAlive: () => {},
+      wait: async (milliseconds) => {
+        clock += milliseconds;
+      },
+    }),
+    /did not initialize the required threads schema/,
+  );
 });
 
 test("the gate rejects an unmarked or malformed isolated CODEX_HOME", () => {

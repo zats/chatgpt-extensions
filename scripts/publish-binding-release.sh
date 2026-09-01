@@ -9,7 +9,7 @@ REPOSITORY="${2:-${GITHUB_REPOSITORY:-}}"
   echo "usage: scripts/publish-binding-release.sh <release-plan.json> <owner/repository>" >&2
   exit 1
 }
-for command in cmp gh grep jq shasum; do
+for command in cmp gh grep jq shasum sleep; do
   command -v "$command" >/dev/null || {
     echo "$command is required" >&2
     exit 1
@@ -126,6 +126,19 @@ release_state() {
   jq -e --arg tag "$TAG" '[.[][] | select(.tag_name == $tag)][0]' "$release_pages" > "$release_json"
 }
 
+wait_for_release_state() {
+  local attempt
+  for ((attempt = 0; attempt < 15; attempt += 1)); do
+    if release_state; then
+      return 0
+    fi
+    if [[ "$attempt" -lt 14 ]]; then
+      sleep 1
+    fi
+  done
+  return 1
+}
+
 require_exact_tag() {
   tag_state || {
     echo "release tag $TAG does not exist at expected source $SOURCE_SHA" >&2
@@ -188,23 +201,21 @@ fi
 ensure_exact_tag
 
 if [[ "$release_exists" == "false" ]]; then
-  if ! gh release create "$TAG" \
-    --repo "$REPOSITORY" \
-    --target "$SOURCE_SHA" \
-    --title "$TITLE" \
-    --notes "$NOTES" \
-    --draft > /dev/null 2> "$release_create_error"; then
+  if ! gh api \
+    --method POST \
+    "repos/$REPOSITORY/releases" \
+    -f "tag_name=$TAG" \
+    -f "target_commitish=$SOURCE_SHA" \
+    -f "name=$TITLE" \
+    -f "body=$NOTES" \
+    -F draft=true \
+    -F prerelease=false > "$release_json" 2> "$release_create_error"; then
     # A concurrent publisher can create the exact draft between the read and create.
-    if ! release_state; then
+    if ! wait_for_release_state; then
       cat "$release_create_error" >&2
       echo "could not create exact draft release $TAG" >&2
       exit 1
     fi
-  else
-    release_state || {
-      echo "created draft release $TAG could not be resolved" >&2
-      exit 1
-    }
   fi
   require_release_identity
 fi
