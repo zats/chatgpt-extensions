@@ -864,7 +864,7 @@ jobs:
           if [[ "$MODE" == "correction" ]]; then
             reference_version="$VERSION"
           else
-            reference_version="$(jq -er .current "$UNTRUSTED_WORKTREE/runtime/bindings/index.json")"
+            reference_version="$(jq -er .current "$GITHUB_WORKSPACE/runtime/bindings/index.json")"
           fi
           prompt="$RUNNER_TEMP/rebind-prompt.md"
           cat > "$prompt" <<PROMPT
@@ -923,12 +923,15 @@ jobs:
           AGENT_UID: ${{ steps.isolation.outputs.uid }}
         run: |
           [[ "$AGENT_UID" =~ ^[0-9]+$ && "$AGENT_UID" -ge 500 ]]
-          sudo /usr/bin/pkill -KILL -u "$AGENT_UID" 2>/dev/null || true
-          for _ in 1 2 3 4 5; do
+          for _ in 1 2 3 4 5 6 7 8 9 10; do
+            sudo /bin/launchctl bootout "gui/$AGENT_UID" 2>/dev/null || true
+            sudo /bin/launchctl bootout "user/$AGENT_UID" 2>/dev/null || true
+            sudo /usr/bin/pkill -KILL -u "$AGENT_UID" 2>/dev/null || true
             if ! /usr/bin/pgrep -u "$AGENT_UID" >/dev/null; then exit 0; fi
             sleep 1
           done
           echo "The untrusted generator still has a live process" >&2
+          /bin/ps -o pid=,ppid=,stat=,comm= -U "$AGENT_UID" >&2 || true
           exit 1
       - name: Capture one raw untrusted patch
         id: raw-patch
@@ -978,12 +981,15 @@ jobs:
           AGENT_UID: ${{ steps.isolation.outputs.uid }}
         run: |
           [[ "$AGENT_UID" =~ ^[0-9]+$ && "$AGENT_UID" -ge 500 ]]
-          sudo /usr/bin/pkill -KILL -u "$AGENT_UID" 2>/dev/null || true
-          for _ in 1 2 3 4 5; do
+          for _ in 1 2 3 4 5 6 7 8 9 10; do
+            sudo /bin/launchctl bootout "gui/$AGENT_UID" 2>/dev/null || true
+            sudo /bin/launchctl bootout "user/$AGENT_UID" 2>/dev/null || true
+            sudo /usr/bin/pkill -KILL -u "$AGENT_UID" 2>/dev/null || true
             if ! /usr/bin/pgrep -u "$AGENT_UID" >/dev/null; then exit 0; fi
             sleep 1
           done
           echo "The untrusted capture still has a live process" >&2
+          /bin/ps -o pid=,ppid=,stat=,comm= -U "$AGENT_UID" >&2 || true
           exit 1
       - name: Encrypt the raw patch for the trusted sanitizer
         id: patch-handoff
